@@ -124,6 +124,8 @@ python .\adc-midi-split.py `
     --split `
     --pdf
 ```
+> [!NOTE]
+> `--pdf` 옵션을 사용할 때는 Ghostscript가 필요합니다.
 
 ---
 
