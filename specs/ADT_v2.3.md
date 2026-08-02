@@ -4,7 +4,7 @@
 **Format name:** Ardule Drum Text (ADT)  
 **Version:** 2.3  
 **Status:** Current  
-**Created:** 2026-08-01
+**Created:** 2026-08-02
 
 ---
 
@@ -269,13 +269,31 @@ The reference writer uses the following symbols:
 | `x` / `X` | medium hit | 64–95 |
 | `o` / `O` / `^` | strong hit | 96–127 |
 
-The default thresholds are `64,96`. A writer may use different thresholds when explicitly configured, but the resulting ADT still stores only the four discrete hit levels including no hit.
+The default velocity thresholds are `64,96`.
 
-When multiple source hits map to the same step and slot, the reference writer retains the strongest symbol according to:
+ADT defines four discrete accent values:
 
-```text
-. < - < x < o < O
-```
+| Accent value | Meaning |
+|---:|---|
+| 0 | Rest |
+| 1 | Weak |
+| 2 | Medium |
+| 3 | Strong |
+
+Only the three non-zero values represent playable hit levels.
+
+The reference writer emits the canonical symbols:
+
+- `.`
+- `-`
+- `x`
+- `o`
+
+Readers should additionally accept the following compatibility symbols:
+
+- `X` → Medium
+- `O` → Strong
+- `^` → Strong
 
 ### 5.2 `STEP` orientation
 
@@ -345,7 +363,9 @@ A conforming ADT v2.3 file shall satisfy the following conditions:
 7. `SLOT_MAP_ID`, when omitted, resolves to `LEGACY`.
 8. `SLOT_MAP_ID=INLINE` is accompanied by valid contiguous inline slot definitions.
 9. The dimensions of `[DATA]` match `LENGTH`, orientation, and slot count.
-10. Every data character is one of `.`, `-`, `x`, `o`, or `O`.
+10. Reference writers shall emit only `.`, `-`, `x`, and `o`.
+
+    Readers shall additionally accept `X`, `O`, and `^` for compatibility.
 11. Ornament-only grace events are not duplicated in the regular grid.
 
 Readers should ignore blank lines and comment lines. Unknown header fields should not silently change the interpretation of defined v2.3 fields.
@@ -418,7 +438,8 @@ Its relevant behavior includes:
 - default `KIT=GM_STD`;
 - default `SLOT_MAP_ID=LEGACY`;
 - default `ORIENTATION=STEP`;
-- discrete symbols `.`, `-`, `x`, `o`, and `O`;
+- canonical symbols `.`, `-`, `x`, and `o`;
+- compatibility support for `X`, `O`, and `^`;
 - exclusion of conservative flam grace notes, including loop-boundary grace notes, from the ADT grid.
 
 ---
