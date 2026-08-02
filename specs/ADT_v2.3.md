@@ -269,7 +269,7 @@ The reference writer uses the following symbols:
 | `x` / `X` | medium hit | 64–95 |
 | `o` / `O` / `^` | strong hit | 96–127 |
 
-The default thresholds are `32,64,96`. A writer may use different thresholds when explicitly configured, but the resulting ADT still stores only the four discrete hit levels.
+The default thresholds are `64,96`. A writer may use different thresholds when explicitly configured, but the resulting ADT still stores only the four discrete hit levels including no hit.
 
 When multiple source hits map to the same step and slot, the reference writer retains the strongest symbol according to:
 
