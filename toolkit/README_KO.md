@@ -23,61 +23,6 @@ ADC Toolkit은 다음과 같은 작업을 지원합니다.
 
 ---
 
-# ADC Toolkit 구성
-
-| 프로그램 | 역할 |
-|-----------|------|
-| **adc-midi-inspector.py** | 입력 MIDI 검사 및 Drum Roll 생성 |
-| **adc-mid2report.py** | 리듬 구조 및 Pattern 분석 |
-| **adc-patternlab.py** | 사람이 Pattern을 검토하고 최종 결정 |
-| **adc-midi-split.py** | Pattern 단위 MIDI 분할 및 PDF 생성 |
-| **adc-mid2adt.py** | Split MIDI → ADT 변환 |
-| **adc-adt2adp.py** | ADT → ADP(Binary Cache) 변환 |
-| **adc-orn-writer.py** | Flam/Grace 등을 ORN으로 저장 |
-| **adx-viewer.py** | ADT/ADP/ORN 시각화 |
-| **adx-player.py** | ADX Pattern 재생 |
-
----
-
-# 전체 작업 흐름
-
-```text
-Standard MIDI
-      │
-      ▼
-adc-midi-inspector
-      │
-      ▼
-adc-mid2report
-      │
-      ▼
-adc-patternlab
-      │
-      ▼
-PatternLab CSV
-      │
-      ▼
-adc-midi-split
-      │
-      ▼
-Split MIDI
-      │
-      ▼
-adc-mid2adt
-      │
-      ▼
-ADT
-      │
-      ├── adc-adt2adp → ADP
-      │
-      └── adc-orn-writer → ORN
-              │
-              ▼
-      adx-viewer / adx-player
-```
-
----
-
 # Quick Start
 
 ## 실행 환경 및 의존성
@@ -205,6 +150,62 @@ python3 adx-player.py ./ADP/RCK_0001.ADP --loop
 ```
 
 ---
+
+# ADC Toolkit 구성
+
+| 프로그램 | 역할 |
+|-----------|------|
+| **adc-midi-inspector.py** | 입력 MIDI 검사 및 Drum Roll 생성 |
+| **adc-mid2report.py** | 리듬 구조 및 Pattern 분석 |
+| **adc-patternlab.py** | 사람이 Pattern을 검토하고 최종 결정 |
+| **adc-midi-split.py** | Pattern 단위 MIDI 분할 및 PDF 생성 |
+| **adc-mid2adt.py** | Split MIDI → ADT 변환 |
+| **adc-adt2adp.py** | ADT → ADP(Binary Cache) 변환 |
+| **adc-orn-writer.py** | Flam/Grace 등을 ORN으로 저장 |
+| **adx-viewer.py** | ADT/ADP/ORN 시각화 |
+| **adx-player.py** | ADX Pattern 재생 |
+
+---
+
+# 전체 작업 흐름
+
+```text
+Standard MIDI
+      │
+      ▼
+adc-midi-inspector
+      │
+      ▼
+adc-mid2report
+      │
+      ▼
+adc-patternlab
+      │
+      ▼
+PatternLab CSV
+      │
+      ▼
+adc-midi-split
+      │
+      ▼
+Split MIDI
+      │
+      ▼
+adc-mid2adt
+      │
+      ▼
+ADT
+      │
+      ├── adc-adt2adp → ADP
+      │
+      └── adc-orn-writer → ORN
+              │
+              ▼
+      adx-viewer / adx-player
+```
+
+---
+
 
 # 핵심 파일 형식
 
