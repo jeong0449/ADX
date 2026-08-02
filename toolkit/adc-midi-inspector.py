@@ -18,7 +18,7 @@ Optional:
 - --write-drum-roll
 
 Created: 2026-08-02
-Version: 260802d
+Version: 260802f
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from mido import Message, MetaMessage, MidiFile, MidiTrack, merge_tracks, tempo2
 
 
 SCRIPT_NAME = "adc-midi-inspector.py"
-VERSION = "260802d"
+VERSION = "260802f"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 DRUM_CHANNEL = 9  # MIDI channel 10, zero-based
@@ -174,7 +174,29 @@ def choose_slot_map(
     maps: Sequence[SlotMapDefinition],
     used_notes: set[int],
 ) -> SlotMapDefinition:
-    ranked = sorted(
+    """Choose the most appropriate slot map for the notes actually used.
+
+    Policy:
+    1. Prefer LEGACY whenever it can represent every used note.
+    2. Otherwise, among maps that fully cover the notes, choose the map with
+       the fewest unused accepted notes, then the lowest slot-map ID.
+    3. If no map fully covers the notes, minimize uncovered notes first.
+    """
+    legacy = next((item for item in maps if item.name.upper() == "LEGACY"), None)
+    if legacy is not None and used_notes <= legacy.accepted_notes:
+        return legacy
+
+    compatible = [item for item in maps if used_notes <= item.accepted_notes]
+    if compatible:
+        return min(
+            compatible,
+            key=lambda item: (
+                len(item.accepted_notes - used_notes),
+                item.slot_map_id,
+            ),
+        )
+
+    return min(
         maps,
         key=lambda item: (
             len(used_notes - item.accepted_notes),
@@ -182,7 +204,6 @@ def choose_slot_map(
             item.slot_map_id,
         ),
     )
-    return ranked[0]
 
 
 @dataclass(frozen=True)
@@ -664,7 +685,8 @@ def write_drum_roll_html(
     title = midi_title(source, timed)
     subtitle = (
         f"CH10 Drum Piano Roll · {slot_map.name} "
-        f"(SLOT_MAP_ID={slot_map.slot_map_id}) · PPQN {mid.ticks_per_beat}"
+        f"(SLOT_MAP_ID={slot_map.slot_map_id}) · PPQN {mid.ticks_per_beat} · "
+        f"{VERSION_TEXT}"
     )
 
     svg: List[str] = []
@@ -787,8 +809,8 @@ def write_drum_roll_html(
 
     target_dir = output_dir if output_dir is not None else source.parent
     target = target_dir / f"{source.stem}_DRUM_ROLL.html"
-    if target.exists():
-        raise FileExistsError(f"output exists: {target}")
+    # Reports are derived artifacts. Regeneration should refresh an existing
+    # report rather than leave a stale file from an older script version.
     target.parent.mkdir(parents=True, exist_ok=True)
 
     document = f"""<!doctype html>
