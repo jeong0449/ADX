@@ -275,6 +275,43 @@ ADC Toolkit은 **Drum Patternology(드럼 패턴학)** 라는 개념을 기반�
 
 ---
 
+# 드럼 패턴 출처
+
+ADC Toolkit 개발 과정에서 사용된 드럼 패턴은 다음과 같은 공개 자료를 참고하였습니다.
+
+## Cakewalk Forum
+
+https://discuss.cakewalk.com/topic/648-460-free-gm-midi-drum-patterns/
+
+- 200 Instant Drum Patterns
+- 260 Instant Drum Patterns
+- 27 Instant Rap Patterns
+
+이 자료는 General MIDI(GM) 형식의 드럼 패턴 예제로, ADC Toolkit의 분석 및 검증에 활용되었습니다.
+
+---
+
+## MIDIDrumFiles
+
+https://mididrumfiles.com/
+
+---
+
+## Rene-Pierre Bardet
+
+Cakewalk Forum에 공개된 **200 Instant Drum Patterns** 및 **260 Instant Drum Patterns**는 Rene-Pierre Bardet의 드럼 패턴 교재에 수록된 리듬을 MIDI 형식으로 변환한 자료로 알려져 있습니다.
+
+원저작물은 드럼 교육용 자료이며, 검색을 통해 관련 PDF와 디지털화된 자료를 확인할 수 있습니다. ADC Toolkit은 이러한 자료를 **드럼 패턴 분석 및 연구**의 입력 데이터로 활용합니다. 특히 패턴의 장르 추정에 원저작물 PDF가 많은 도움이 되었습니다.
+
+---
+
+> [!NOTE]
+> ADC Toolkit은 MIDI 파일 자체를 배포하는 프로젝트가 아닙니다.
+>
+> 본 프로젝트는 사용자가 적법하게 확보한 Standard MIDI File을 분석하여 재사용 가능한 드럼 패턴(ADT/ADP/ORN)으로 추상화하는 도구를 제공합니다.
+
+---
+
 # 라이선스
 
 본 프로젝트의 라이선스는 추후 공개 예정입니다.
