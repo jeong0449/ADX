@@ -237,9 +237,9 @@ ADC Toolkit은 **Drum Patternology(드럼 패턴학)** 라는 개념을 기반�
 상세한 사용 방법은 다음 문서를 참고하십시오.
 
 - `docs/ADC_Toolkit_User_Guide_KO.md`
-- [`specs/ADT_v2.3.md`](specs/ADT_v2.3.md)
-- [`specs/ADP_v2.3.md`](specs/ADP_v2.3.md)
-- [`specs/ORN_v1.0.md`](specs/ORN_v1.0.md)
+- [`specs/ADT_v2.3.md`](../specs/ADT_v2.3.md)
+- [`specs/ADP_v2.3.md`](../specs/ADP_v2.3.md)
+- [`specs/ORN_v1.0.md`](../specs/ORN_v1.0.md)
 
 ---
 
