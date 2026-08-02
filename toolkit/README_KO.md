@@ -80,6 +80,38 @@ ADT
 
 # Quick Start
 
+## 실행 환경 및 의존성
+
+ADC Toolkit은 **Python 3.10 이상**을 기준으로 개발되었습니다.
+
+### 필수 환경
+
+- Python 3.10 이상
+- Windows 10/11 (권장)
+- 표준 MIDI File(SMF)
+
+### 주요 Python 패키지
+
+ADC Toolkit은 다음과 같은 Python 패키지를 사용합니다.
+
+- mido
+- pretty_midi
+- pandas
+- numpy
+- matplotlib
+- svgwrite
+
+필요한 패키지는 다음과 같이 설치할 수 있습니다.
+
+```powershell
+pip install -r requirements.txt
+```
+
+> [!TIP]
+> `adc-midi-split.py`의 PDF 생성 기능(`--pdf`)을 사용하려면 **Ghostscript**가 설치되어 있어야 합니다.
+>
+> Ghostscript는 **PDF 생성에만 필요**하며, 일반적인 MIDI 분석 및 패턴 분할 기능에는 필요하지 않습니다.
+
 ## 1. 입력 MIDI 검사
 
 ```powershell
@@ -124,8 +156,6 @@ python .\adc-midi-split.py `
     --split `
     --pdf
 ```
-> [!NOTE]
-> `--pdf` 옵션을 사용할 때는 Ghostscript가 필요합니다.
 
 ---
 
