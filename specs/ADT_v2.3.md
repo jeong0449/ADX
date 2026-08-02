@@ -265,10 +265,9 @@ The reference writer uses the following symbols:
 | Symbol | Meaning | Default MIDI-velocity range |
 |---|---|---:|
 | `.` | no hit | — |
-| `-` | weakest hit level | 1–31 |
-| `x` | soft hit | 32–63 |
-| `o` | normal hit | 64–95 |
-| `O` | accented hit | 96–127 |
+| `-` | weak hit | 1–63 |
+| `x` / `X` | medium hit | 64–95 |
+| `o` / `O` / `^` | strong hit | 96–127 |
 
 The default thresholds are `32,64,96`. A writer may use different thresholds when explicitly configured, but the resulting ADT still stores only the four discrete hit levels.
 
