@@ -1,0 +1,754 @@
+[
+  {
+    "slot_map_id": 0,
+    "name": "LEGACY",
+    "slots": [
+      {
+        "slot": 0,
+        "abbrev": "KK",
+        "extended": "KICK",
+        "representative_midi": 36,
+        "midi_input_allowed": [
+          35,
+          36
+        ],
+        "gm_name": "Bass Drum 1"
+      },
+      {
+        "slot": 1,
+        "abbrev": "SN",
+        "extended": "SNARE",
+        "representative_midi": 38,
+        "midi_input_allowed": [
+          38,
+          40
+        ],
+        "gm_name": "Acoustic Snare"
+      },
+      {
+        "slot": 2,
+        "abbrev": "CH",
+        "extended": "HH_CL",
+        "representative_midi": 42,
+        "midi_input_allowed": [
+          42
+        ],
+        "gm_name": "Closed Hi-Hat"
+      },
+      {
+        "slot": 3,
+        "abbrev": "OH",
+        "extended": "HH_OP",
+        "representative_midi": 46,
+        "midi_input_allowed": [
+          46
+        ],
+        "gm_name": "Open Hi-Hat"
+      },
+      {
+        "slot": 4,
+        "abbrev": "LT",
+        "extended": "TOM_L",
+        "representative_midi": 43,
+        "midi_input_allowed": [
+          41,
+          43
+        ],
+        "gm_name": "High Floor Tom"
+      },
+      {
+        "slot": 5,
+        "abbrev": "MT",
+        "extended": "TOM_M",
+        "representative_midi": 47,
+        "midi_input_allowed": [
+          45,
+          47
+        ],
+        "gm_name": "Low-Mid Tom"
+      },
+      {
+        "slot": 6,
+        "abbrev": "HT",
+        "extended": "TOM_H",
+        "representative_midi": 50,
+        "midi_input_allowed": [
+          48,
+          50
+        ],
+        "gm_name": "High Tom"
+      },
+      {
+        "slot": 7,
+        "abbrev": "RD",
+        "extended": "RIDE",
+        "representative_midi": 51,
+        "midi_input_allowed": [
+          51,
+          53,
+          59
+        ],
+        "gm_name": "Ride Cymbal 1"
+      },
+      {
+        "slot": 8,
+        "abbrev": "CR",
+        "extended": "CRASH",
+        "representative_midi": 49,
+        "midi_input_allowed": [
+          49,
+          52,
+          55,
+          57
+        ],
+        "gm_name": "Crash Cymbal 1"
+      },
+      {
+        "slot": 9,
+        "abbrev": "SS",
+        "extended": "S_STK",
+        "representative_midi": 37,
+        "midi_input_allowed": [
+          37
+        ],
+        "gm_name": "Side Stick"
+      },
+      {
+        "slot": 10,
+        "abbrev": "CL",
+        "extended": "CLAP",
+        "representative_midi": 39,
+        "midi_input_allowed": [
+          39
+        ],
+        "gm_name": "Hand Clap"
+      },
+      {
+        "slot": 11,
+        "abbrev": "PH",
+        "extended": "HH_PED",
+        "representative_midi": 44,
+        "midi_input_allowed": [
+          44
+        ],
+        "gm_name": "Pedal Hi-Hat"
+      }
+    ]
+  },
+  {
+    "slot_map_id": 1,
+    "name": "RAP",
+    "slots": [
+      {
+        "slot": 0,
+        "abbrev": "KK",
+        "extended": "KICK",
+        "representative_midi": 36,
+        "midi_input_allowed": [
+          35,
+          36
+        ],
+        "gm_name": "Bass Drum 1"
+      },
+      {
+        "slot": 1,
+        "abbrev": "SN",
+        "extended": "SNARE",
+        "representative_midi": 38,
+        "midi_input_allowed": [
+          38,
+          40
+        ],
+        "gm_name": "Acoustic Snare"
+      },
+      {
+        "slot": 2,
+        "abbrev": "CH",
+        "extended": "HH_CL",
+        "representative_midi": 42,
+        "midi_input_allowed": [
+          42
+        ],
+        "gm_name": "Closed Hi-Hat"
+      },
+      {
+        "slot": 3,
+        "abbrev": "OH",
+        "extended": "HH_OP",
+        "representative_midi": 46,
+        "midi_input_allowed": [
+          46
+        ],
+        "gm_name": "Open Hi-Hat"
+      },
+      {
+        "slot": 4,
+        "abbrev": "LT",
+        "extended": "TOM_L",
+        "representative_midi": 43,
+        "midi_input_allowed": [
+          41,
+          43
+        ],
+        "gm_name": "High Floor Tom"
+      },
+      {
+        "slot": 5,
+        "abbrev": "MT",
+        "extended": "TOM_M",
+        "representative_midi": 47,
+        "midi_input_allowed": [
+          45,
+          47
+        ],
+        "gm_name": "Low-Mid Tom"
+      },
+      {
+        "slot": 6,
+        "abbrev": "HT",
+        "extended": "TOM_H",
+        "representative_midi": 50,
+        "midi_input_allowed": [
+          48,
+          50
+        ],
+        "gm_name": "High Tom"
+      },
+      {
+        "slot": 7,
+        "abbrev": "CR",
+        "extended": "CRASH",
+        "representative_midi": 49,
+        "midi_input_allowed": [
+          49,
+          52,
+          55,
+          57
+        ],
+        "gm_name": "Crash Cymbal 1"
+      },
+      {
+        "slot": 8,
+        "abbrev": "CL",
+        "extended": "CLAP",
+        "representative_midi": 39,
+        "midi_input_allowed": [
+          39
+        ],
+        "gm_name": "Hand Clap"
+      },
+      {
+        "slot": 9,
+        "abbrev": "PH",
+        "extended": "HH_PED",
+        "representative_midi": 44,
+        "midi_input_allowed": [
+          44
+        ],
+        "gm_name": "Pedal Hi-Hat"
+      },
+      {
+        "slot": 10,
+        "abbrev": "CB",
+        "extended": "COWBELL",
+        "representative_midi": 56,
+        "midi_input_allowed": [
+          56
+        ],
+        "gm_name": "Cowbell"
+      },
+      {
+        "slot": 11,
+        "abbrev": "CA",
+        "extended": "CABASA",
+        "representative_midi": 69,
+        "midi_input_allowed": [
+          69
+        ],
+        "gm_name": "Cabasa"
+      }
+    ]
+  },
+  {
+    "slot_map_id": 2,
+    "name": "ADD1",
+    "slots": [
+      {
+        "slot": 0,
+        "abbrev": "KK",
+        "extended": "KICK",
+        "representative_midi": 36,
+        "midi_input_allowed": [
+          35,
+          36
+        ],
+        "gm_name": "Bass Drum 1"
+      },
+      {
+        "slot": 1,
+        "abbrev": "SN",
+        "extended": "SNARE",
+        "representative_midi": 38,
+        "midi_input_allowed": [
+          38,
+          40
+        ],
+        "gm_name": "Acoustic Snare"
+      },
+      {
+        "slot": 2,
+        "abbrev": "CH",
+        "extended": "HH_CL",
+        "representative_midi": 42,
+        "midi_input_allowed": [
+          42
+        ],
+        "gm_name": "Closed Hi-Hat"
+      },
+      {
+        "slot": 3,
+        "abbrev": "OH",
+        "extended": "HH_OP",
+        "representative_midi": 46,
+        "midi_input_allowed": [
+          46
+        ],
+        "gm_name": "Open Hi-Hat"
+      },
+      {
+        "slot": 4,
+        "abbrev": "CR",
+        "extended": "CRASH",
+        "representative_midi": 49,
+        "midi_input_allowed": [
+          49,
+          52,
+          55,
+          57
+        ],
+        "gm_name": "Crash Cymbal 1"
+      },
+      {
+        "slot": 5,
+        "abbrev": "SS",
+        "extended": "S_STK",
+        "representative_midi": 37,
+        "midi_input_allowed": [
+          37
+        ],
+        "gm_name": "Side Stick"
+      },
+      {
+        "slot": 6,
+        "abbrev": "PH",
+        "extended": "HH_PED",
+        "representative_midi": 44,
+        "midi_input_allowed": [
+          44
+        ],
+        "gm_name": "Pedal Hi-Hat"
+      },
+      {
+        "slot": 7,
+        "abbrev": "P54",
+        "extended": "TAMBOURINE",
+        "representative_midi": 54,
+        "midi_input_allowed": [
+          54
+        ],
+        "gm_name": "Tambourine"
+      },
+      {
+        "slot": 8,
+        "abbrev": "P56",
+        "extended": "COWBELL",
+        "representative_midi": 56,
+        "midi_input_allowed": [
+          56
+        ],
+        "gm_name": "Cowbell"
+      },
+      {
+        "slot": 9,
+        "abbrev": "P58",
+        "extended": "VIBRASLAP",
+        "representative_midi": 58,
+        "midi_input_allowed": [
+          58
+        ],
+        "gm_name": "Vibraslap"
+      },
+      {
+        "slot": 10,
+        "abbrev": "P70",
+        "extended": "MARACAS",
+        "representative_midi": 70,
+        "midi_input_allowed": [
+          70
+        ],
+        "gm_name": "Maracas"
+      },
+      {
+        "slot": 11,
+        "abbrev": "P77",
+        "extended": "LOW_WOOD_BLOCK",
+        "representative_midi": 77,
+        "midi_input_allowed": [
+          77
+        ],
+        "gm_name": "Low Wood Block"
+      }
+    ]
+  },
+  {
+    "slot_map_id": 3,
+    "name": "ADD2",
+    "slots": [
+      {
+        "slot": 0,
+        "abbrev": "KK",
+        "extended": "KICK",
+        "representative_midi": 36,
+        "midi_input_allowed": [
+          35,
+          36
+        ],
+        "gm_name": "Bass Drum 1"
+      },
+      {
+        "slot": 1,
+        "abbrev": "SN",
+        "extended": "SNARE",
+        "representative_midi": 38,
+        "midi_input_allowed": [
+          38,
+          40
+        ],
+        "gm_name": "Acoustic Snare"
+      },
+      {
+        "slot": 2,
+        "abbrev": "CH",
+        "extended": "HH_CL",
+        "representative_midi": 42,
+        "midi_input_allowed": [
+          42
+        ],
+        "gm_name": "Closed Hi-Hat"
+      },
+      {
+        "slot": 3,
+        "abbrev": "LT",
+        "extended": "TOM_L",
+        "representative_midi": 43,
+        "midi_input_allowed": [
+          41,
+          43
+        ],
+        "gm_name": "High Floor Tom"
+      },
+      {
+        "slot": 4,
+        "abbrev": "MT",
+        "extended": "TOM_M",
+        "representative_midi": 47,
+        "midi_input_allowed": [
+          45,
+          47
+        ],
+        "gm_name": "Low-Mid Tom"
+      },
+      {
+        "slot": 5,
+        "abbrev": "RD",
+        "extended": "RIDE",
+        "representative_midi": 51,
+        "midi_input_allowed": [
+          51,
+          53,
+          59
+        ],
+        "gm_name": "Ride Cymbal 1"
+      },
+      {
+        "slot": 6,
+        "abbrev": "CR",
+        "extended": "CRASH",
+        "representative_midi": 49,
+        "midi_input_allowed": [
+          49,
+          52,
+          55,
+          57
+        ],
+        "gm_name": "Crash Cymbal 1"
+      },
+      {
+        "slot": 7,
+        "abbrev": "P56",
+        "extended": "COWBELL",
+        "representative_midi": 56,
+        "midi_input_allowed": [
+          56
+        ],
+        "gm_name": "Cowbell"
+      },
+      {
+        "slot": 8,
+        "abbrev": "P67",
+        "extended": "HIGH_AGOGO",
+        "representative_midi": 67,
+        "midi_input_allowed": [
+          67
+        ],
+        "gm_name": "High Agogo"
+      },
+      {
+        "slot": 9,
+        "abbrev": "P68",
+        "extended": "LOW_AGOGO",
+        "representative_midi": 68,
+        "midi_input_allowed": [
+          68
+        ],
+        "gm_name": "Low Agogo"
+      }
+    ]
+  },
+  {
+    "slot_map_id": 4,
+    "name": "ADD3",
+    "slots": [
+      {
+        "slot": 0,
+        "abbrev": "KK",
+        "extended": "KICK",
+        "representative_midi": 36,
+        "midi_input_allowed": [
+          35,
+          36
+        ],
+        "gm_name": "Bass Drum 1"
+      },
+      {
+        "slot": 1,
+        "abbrev": "SN",
+        "extended": "SNARE",
+        "representative_midi": 38,
+        "midi_input_allowed": [
+          38,
+          40
+        ],
+        "gm_name": "Acoustic Snare"
+      },
+      {
+        "slot": 2,
+        "abbrev": "CH",
+        "extended": "HH_CL",
+        "representative_midi": 42,
+        "midi_input_allowed": [
+          42
+        ],
+        "gm_name": "Closed Hi-Hat"
+      },
+      {
+        "slot": 3,
+        "abbrev": "LT",
+        "extended": "TOM_L",
+        "representative_midi": 43,
+        "midi_input_allowed": [
+          41,
+          43
+        ],
+        "gm_name": "High Floor Tom"
+      },
+      {
+        "slot": 4,
+        "abbrev": "MT",
+        "extended": "TOM_M",
+        "representative_midi": 47,
+        "midi_input_allowed": [
+          45,
+          47
+        ],
+        "gm_name": "Low-Mid Tom"
+      },
+      {
+        "slot": 5,
+        "abbrev": "SS",
+        "extended": "S_STK",
+        "representative_midi": 37,
+        "midi_input_allowed": [
+          37
+        ],
+        "gm_name": "Side Stick"
+      },
+      {
+        "slot": 6,
+        "abbrev": "PH",
+        "extended": "HH_PED",
+        "representative_midi": 44,
+        "midi_input_allowed": [
+          44
+        ],
+        "gm_name": "Pedal Hi-Hat"
+      },
+      {
+        "slot": 7,
+        "abbrev": "P60",
+        "extended": "HI_BONGO",
+        "representative_midi": 60,
+        "midi_input_allowed": [
+          60
+        ],
+        "gm_name": "Hi Bongo"
+      },
+      {
+        "slot": 8,
+        "abbrev": "P61",
+        "extended": "LOW_BONGO",
+        "representative_midi": 61,
+        "midi_input_allowed": [
+          61
+        ],
+        "gm_name": "Low Bongo"
+      },
+      {
+        "slot": 9,
+        "abbrev": "P62",
+        "extended": "MUTE_HI_CONGA",
+        "representative_midi": 62,
+        "midi_input_allowed": [
+          62
+        ],
+        "gm_name": "Mute Hi Conga"
+      },
+      {
+        "slot": 10,
+        "abbrev": "P63",
+        "extended": "OPEN_HI_CONGA",
+        "representative_midi": 63,
+        "midi_input_allowed": [
+          63
+        ],
+        "gm_name": "Open Hi Conga"
+      },
+      {
+        "slot": 11,
+        "abbrev": "P64",
+        "extended": "LOW_CONGA",
+        "representative_midi": 64,
+        "midi_input_allowed": [
+          64
+        ],
+        "gm_name": "Low Conga"
+      }
+    ]
+  },
+  {
+    "slot_map_id": 5,
+    "name": "ADD4",
+    "slots": [
+      {
+        "slot": 0,
+        "abbrev": "CH",
+        "extended": "HH_CL",
+        "representative_midi": 42,
+        "midi_input_allowed": [
+          42
+        ],
+        "gm_name": "Closed Hi-Hat"
+      },
+      {
+        "slot": 1,
+        "abbrev": "OH",
+        "extended": "HH_OP",
+        "representative_midi": 46,
+        "midi_input_allowed": [
+          46
+        ],
+        "gm_name": "Open Hi-Hat"
+      },
+      {
+        "slot": 2,
+        "abbrev": "P56",
+        "extended": "COWBELL",
+        "representative_midi": 56,
+        "midi_input_allowed": [
+          56
+        ],
+        "gm_name": "Cowbell"
+      },
+      {
+        "slot": 3,
+        "abbrev": "P62",
+        "extended": "MUTE_HI_CONGA",
+        "representative_midi": 62,
+        "midi_input_allowed": [
+          62
+        ],
+        "gm_name": "Mute Hi Conga"
+      },
+      {
+        "slot": 4,
+        "abbrev": "P63",
+        "extended": "OPEN_HI_CONGA",
+        "representative_midi": 63,
+        "midi_input_allowed": [
+          63
+        ],
+        "gm_name": "Open Hi Conga"
+      },
+      {
+        "slot": 5,
+        "abbrev": "P64",
+        "extended": "LOW_CONGA",
+        "representative_midi": 64,
+        "midi_input_allowed": [
+          64
+        ],
+        "gm_name": "Low Conga"
+      },
+      {
+        "slot": 6,
+        "abbrev": "P65",
+        "extended": "HIGH_TIMBALE",
+        "representative_midi": 65,
+        "midi_input_allowed": [
+          65
+        ],
+        "gm_name": "High Timbale"
+      },
+      {
+        "slot": 7,
+        "abbrev": "P66",
+        "extended": "LOW_TIMBALE",
+        "representative_midi": 66,
+        "midi_input_allowed": [
+          66
+        ],
+        "gm_name": "Low Timbale"
+      },
+      {
+        "slot": 8,
+        "abbrev": "P67",
+        "extended": "HIGH_AGOGO",
+        "representative_midi": 67,
+        "midi_input_allowed": [
+          67
+        ],
+        "gm_name": "High Agogo"
+      },
+      {
+        "slot": 9,
+        "abbrev": "P68",
+        "extended": "LOW_AGOGO",
+        "representative_midi": 68,
+        "midi_input_allowed": [
+          68
+        ],
+        "gm_name": "Low Agogo"
+      }
+    ]
+  }
+]
