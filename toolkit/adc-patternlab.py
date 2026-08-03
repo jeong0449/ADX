@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adc-patternlab.py 260802f
+"""adc-patternlab.py 260803i
 
 One MIDI -> self-contained interactive HTML/SVG whole-file drum matrix.
 Click the SVG to toggle RAW GM notes and two-bar SLOT_MAP display.
@@ -15,7 +15,7 @@ from mido import Message, MetaMessage, MidiFile
 
 from adc_rhythm_analysis import analyze_event_rhythm, detect_flams
 
-SCRIPT_NAME="adc-patternlab.py"; VERSION="260802f"; VERSION_TEXT=f"{SCRIPT_NAME} {VERSION}"
+SCRIPT_NAME="adc-patternlab.py"; VERSION="260803i"; VERSION_TEXT=f"{SCRIPT_NAME} {VERSION}"
 GHOST_CANDIDATE_MAX_VELOCITY=30
 GM={35:"Acoustic Bass Drum",36:"Bass Drum 1",37:"Side Stick",38:"Acoustic Snare",39:"Hand Clap",40:"Electric Snare",41:"Low Floor Tom",42:"Closed Hi-Hat",43:"High Floor Tom",44:"Pedal Hi-Hat",45:"Low Tom",46:"Open Hi-Hat",47:"Low-Mid Tom",48:"Hi-Mid Tom",49:"Crash Cymbal 1",50:"High Tom",51:"Ride Cymbal 1",52:"Chinese Cymbal",53:"Ride Bell",54:"Tambourine",55:"Splash Cymbal",56:"Cowbell",57:"Crash Cymbal 2",58:"Vibraslap",59:"Ride Cymbal 2",60:"Hi Bongo",61:"Low Bongo",62:"Mute Hi Conga",63:"Open Hi Conga",64:"Low Conga",65:"High Timbale",66:"Low Timbale",67:"High Agogo",68:"Low Agogo",69:"Cabasa",70:"Maracas",71:"Short Whistle",72:"Long Whistle",73:"Short Guiro",74:"Long Guiro",75:"Claves",76:"Hi Wood Block",77:"Low Wood Block",78:"Mute Cuica",79:"Open Cuica",80:"Mute Triangle",81:"Open Triangle"}
 GENRES=(
@@ -66,7 +66,7 @@ def infer_genre(filename: str) -> str:
 
 
 @dataclass(frozen=True)
-class Slot: label:str; notes:Tuple[int,...]
+class Slot: label:str; notes:Tuple[int,...]; representative:int
 @dataclass(frozen=True)
 class SMap:
     id:int; name:str; slots:Tuple[Slot,...]
@@ -100,7 +100,7 @@ def load_slot_maps(path: Path) -> Tuple[SMap, ...]:
             if not isinstance(label,str) or not label:raise ValueError(f"{name} slot {slot_no}: missing abbrev")
             if not isinstance(allowed,list) or not allowed or any(not isinstance(n,int) for n in allowed):raise ValueError(f"{name} slot {slot_no}: invalid midi_input_allowed")
             if rep not in allowed:raise ValueError(f"{name} slot {slot_no}: representative_midi must be allowed")
-            seen_slots.add(slot_no); slots.append((slot_no,Slot(label,tuple(allowed))))
+            seen_slots.add(slot_no); slots.append((slot_no,Slot(label,tuple(allowed),int(rep))))
         expected=list(range(len(slots)))
         actual=sorted(seen_slots)
         if actual!=expected:raise ValueError(f"{name}: slot numbers must be contiguous 0..{len(slots)-1}")
@@ -109,6 +109,54 @@ def load_slot_maps(path: Path) -> Tuple[SMap, ...]:
     return tuple(maps)
 
 MAPS:Tuple[SMap,...]=()
+ACCENT_LEVELS:dict={}
+
+
+def load_accent_levels(path: Path) -> dict:
+    """Load and validate 4-accent and 6-accent velocity quantization schemes."""
+    try:
+        data=json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"accent-level definition not found: {path}") from exc
+    except (OSError,json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load accent-level definition {path}: {exc}") from exc
+    schemes=data.get("schemes") if isinstance(data,dict) else None
+    if not isinstance(schemes,dict):
+        raise ValueError("accent-level JSON must contain an object named 'schemes'")
+    for scheme_name, expected_count in (("4-accent",4),("6-accent",6)):
+        scheme=schemes.get(scheme_name)
+        levels=scheme.get("levels") if isinstance(scheme,dict) else None
+        if not isinstance(levels,list) or len(levels)!=expected_count:
+            raise ValueError(f"{scheme_name}: exactly {expected_count} levels are required, including rest")
+        expected_min=0
+        for index,level in enumerate(levels):
+            if not isinstance(level,dict):
+                raise ValueError(f"{scheme_name} level {index}: must be an object")
+            if level.get("index")!=index:
+                raise ValueError(f"{scheme_name} level {index}: index must equal its array position")
+            lo=level.get("min_velocity"); hi=level.get("max_velocity"); rep=level.get("representative_velocity")
+            if not all(isinstance(v,int) for v in (lo,hi,rep)):
+                raise ValueError(f"{scheme_name} level {index}: velocity values must be integers")
+            if lo!=expected_min or not 0<=lo<=hi<=127:
+                raise ValueError(f"{scheme_name} level {index}: ranges must be contiguous and cover 0..127")
+            if not lo<=rep<=hi:
+                raise ValueError(f"{scheme_name} level {index}: representative_velocity must lie within its range")
+            if index==0 and not (lo==hi==rep==0):
+                raise ValueError(f"{scheme_name}: level 0 must be Rest with velocity 0")
+            expected_min=hi+1
+        if expected_min!=128:
+            raise ValueError(f"{scheme_name}: ranges must end at velocity 127")
+    return data
+
+
+def accent_level(velocity: int, scheme_name: str):
+    levels=ACCENT_LEVELS["schemes"][scheme_name]["levels"]
+    value=max(0,min(127,int(velocity)))
+    for level in levels:
+        if level["min_velocity"] <= value <= level["max_velocity"]:
+            return level
+    raise ValueError(f"velocity {value} is not covered by {scheme_name}")
+
 
 
 @dataclass
@@ -151,6 +199,22 @@ def embedded_header_metadata(mid):
     elif len(timesigs)>1:
         parts.append(f"time-signature changes ×{len(timesigs)}")
     return parts
+
+def tempo_at_tick(mid, target_tick):
+    """Return the last set_tempo value active at target_tick, defaulting to 120 BPM."""
+    tempos=[(0,500000)]
+    for tr in mid.tracks:
+        tick=0
+        for msg in tr:
+            tick+=msg.time
+            if isinstance(msg,MetaMessage) and msg.type=="set_tempo":
+                tempos.append((tick,int(msg.tempo)))
+    active=500000
+    for tick,tempo in sorted(tempos):
+        if tick>target_tick:
+            break
+        active=tempo
+    return active
 
 def collect(mid):
     ev=[]; ts=[]; mx=0
@@ -218,7 +282,12 @@ def _is_ending_hit_block(block_bars, events):
     return near_start and len(onset_group)==len(events)
 
 def _pattern_signature(block):
-    return tuple(sorted((e.tick-block.start,e.note,e.vel,e.dur) for e in block.events))
+    """Return a timing-only identity signature for one pattern block.
+
+    Pattern identity depends only on each raw MIDI note's relative onset tick
+    and note number. Velocity and note duration are deliberately ignored.
+    """
+    return tuple(sorted((e.tick-block.start,e.note) for e in block.events))
 
 def skip_leading_empty_bars(bars, events):
     """Drop only leading bars without CH10 note-on events; preserve Bar.no."""
@@ -267,30 +336,26 @@ def velocity_level(velocity):
 
 
 def adx_hit_level(velocity):
-    """Map a present MIDI note to the three ADX hit strengths.
+    """Map a present note through the externally defined 4-accent scheme."""
+    level=accent_level(velocity,"4-accent")
+    if level["index"]==0:
+        raise ValueError("a present MIDI note cannot map to Rest")
+    return level["index"]-1,level["label"].lower()
 
-    No Hit is represented by the absence of a note in the quantized slot/cell.
-    Every positive MIDI velocity remains a hit: 1..60 weak, 61..100 medium,
-    and 101..127 strong.
-    """
-    if velocity <= 60:return 0,"weak hit"
-    if velocity <= 100:return 1,"medium hit"
-    return 2,"strong hit"
-
-def reference_card(b,x,y,w=430,h=350,path=None):
+def reference_card(b,x,y,w=430,h=382,path=None):
     bars=str(b.bars[0].no) if len(b.bars)==1 else f'{b.bars[0].no}–{b.bars[-1].no}'
     p=[f'<g class="block duplicate {"bad" if b.unknown else ""}"><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" class="bg"/>']
     p += [tx(x+16,y+28,f'B{b.no:03d}  bars {bars}',"title"),tx(x+w/2,y+105,f'Pattern #{b.pattern_no:03d}',"dup-pattern","middle"),tx(x+w/2,y+139,f'Same as B{b.duplicate_of:03d}',"dup-same","middle"),tx(x+w/2,y+169,f'ID {b.smap.id} {b.smap.name} · matrix omitted',"meta","middle"),tx(x+w/2,y+192,('MISSING NOTES: '+','.join(map(str,b.unknown))) if b.unknown else '',"warning","middle"),tx(x+16,y+248,'duplicate checked within this MIDI file only',"meta"),card_controls(path,b,x,y+264,w),'</g>']
     return ''.join(p)
 
-def ending_card(b,x,y,w=430,h=350,path=None):
+def ending_card(b,x,y,w=430,h=382,path=None):
     notes=', '.join(f'{e.note}({e.vel})' for e in b.events) or '(none)'
     bar=str(b.bars[0].no)
     p=[f'<g class="block ending"><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" class="bg"/>']
     p += [tx(x+16,y+28,f'B{b.no:03d}  bar {bar}',"title"),tx(x+w/2,y+100,'ENDING HIT',"ending-title","middle"),tx(x+w/2,y+134,'excluded from pattern catalog',"dup-same","middle"),tx(x+w/2,y+166,f'notes: {notes}',"meta","middle"),tx(x+16,y+248,'single onset group at the start of the final odd bar',"meta"),card_controls(path,b,x,y+264,w,disabled=True),'</g>']
     return ''.join(p)
 
-def card(b,x,y,w=430,h=350,path=None):
+def card(b,x,y,w=430,h=382,path=None):
     beats=max(1.0,(b.end-b.start)/max(1,b.subdiv.get("tpq",1)))
     detected=b.subdiv.get("subdivision","unknown")
     initial_subdiv={
@@ -301,7 +366,7 @@ def card(b,x,y,w=430,h=350,path=None):
     hh,fh,lw=58,28,96; plot_h=260; gx,gy=x+lw,y+hh; gw,gh=w-lw-8,plot_h-hh-fh
     raw=sorted({e.note for e in b.events},reverse=True) or [36]
     slots=list(range(len(b.smap.slots)-1,-1,-1)); p=[]
-    p.append(f'<g class="block pattern-card {"bad" if b.unknown else ""}" data-block="{b.no}">')
+    p.append(f'<g class="block pattern-card {"bad" if b.unknown else ""}" data-block="{b.no}" data-duration-ticks="{max(1,b.end-b.start)}">')
     p.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" class="bg"/>')
     bars=str(b.bars[0].no) if len(b.bars)==1 else f'{b.bars[0].no}–{b.bars[-1].no}'
     meters=[f'{z.num}/{z.den}' for z in b.bars]; meter=meters[0] if len(set(meters))==1 else '→'.join(meters)
@@ -338,12 +403,12 @@ def card(b,x,y,w=430,h=350,path=None):
 
     p.append('<g class="raw">'); rh=gh/len(raw); rmap={n:i for i,n in enumerate(raw)}
     for i,n in enumerate(raw):
-        yy=gy+i*rh; p += [tx(x+8,yy+rh*.7,f'{n} {GM.get(n,"non-GM")}',"row"),f'<line x1="{gx}" y1="{yy+rh:.2f}" x2="{gx+gw}" y2="{yy+rh:.2f}" class="rguide"/>']
+        yy=gy+i*rh; row_class="row unknown-row" if n in b.unknown else "row"; p += [tx(x+8,yy+rh*.7,f'{n} {GM.get(n,"non-GM")}',row_class),f'<line x1="{gx}" y1="{yy+rh:.2f}" x2="{gx+gw}" y2="{yy+rh:.2f}" class="rguide"/>']
     grace_offset=min(10.0,max(5.0,rh*.22)); duration=max(1,b.end-b.start)
     for e in b.events:
         frac=(e.tick-b.start)/duration; cx=gx+max(0.0,min(1.0,frac))*gw
         base_cy=gy+(rmap[e.note]+.5)*rh; rr=2+2.2*e.vel/127; role=pair_role.get(id(e)); cy=base_cy-grace_offset if role=="grace" else base_cy
-        classes=["hit","rawhit"]
+        classes=["hit","rawhit","raw-event","deviation-aligned"]
         if e.note in b.unknown:classes.append("unknown")
         ghost_candidate=e.vel<=GHOST_CANDIDATE_MAX_VELOCITY
         orn_reasons=[]
@@ -367,9 +432,11 @@ def card(b,x,y,w=430,h=350,path=None):
         extra=("; "+"; ".join(labels)) if labels else ""
         actual_duration_width=max(0.0,e.dur/duration*gw)
         duration_x2=min(gx+gw,max(cx+2.0,cx+actual_duration_width))
-        duration_class="rawduration ornduration" if orn_reasons else "rawduration"
-        p.append(f'<line x1="{cx:.2f}" y1="{cy:.2f}" x2="{duration_x2:.2f}" y2="{cy:.2f}" class="{duration_class}"><title>note {e.note}, note-on {e.tick}, note-off {e.tick+e.dur}, duration {e.dur} ticks{extra}</title></line>')
-        p.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{rr:.2f}" class="{" ".join(classes)}"><title>note {e.note}, velocity {e.vel}, duration {e.dur}, tick {e.tick}{extra}</title></circle>')
+        duration_classes=["rawduration","raw-event","deviation-aligned"]
+        if orn_reasons:duration_classes.append("ornduration")
+        event_offset=e.tick-b.start
+        p.append(f'<line x1="{cx:.2f}" y1="{cy:.2f}" x2="{duration_x2:.2f}" y2="{cy:.2f}" class="{" ".join(duration_classes)}" data-tick-offset="{event_offset}"><title>note {e.note}, note-on {e.tick}, note-off {e.tick+e.dur}, duration {e.dur} ticks{extra}</title></line>')
+        p.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{rr:.2f}" class="{" ".join(classes)}" data-tick-offset="{event_offset}"><title>note {e.note}, velocity {e.vel}, duration {e.dur}, tick {e.tick}{extra}</title></circle>')
     p.append('</g>')
 
     p.append('<g class="slot">'); sh=gh/len(slots); smap={s:i for i,s in enumerate(slots)}
@@ -392,7 +459,7 @@ def card(b,x,y,w=430,h=350,path=None):
             p.append(f'<rect x="{xx+.6:.2f}" y="{yy+.6:.2f}" width="{max(.5,cell_w-1.2):.2f}" height="{max(.5,sh-1.2):.2f}" rx="1.2" class="slotcell velocity{vlevel} hitstrength{hlevel}"><title>slot {si} {b.smap.slots[si].label}; raw {e.note}; velocity {e.vel} (band {vlevel}); ADX {hlabel}; duration {e.dur}; subdivision {subdiv}</title></rect>')
         p.append('</g>')
     p.append('</g>')
-    foot='click SVG: RAW ↔ SLOT' if not b.unknown else 'WARNING · nearest SLOT_MAP used · missing notes: '+','.join(map(str,b.unknown))
+    foot='click SVG: RAW ↔ QUANTIZED' if not b.unknown else 'WARNING · nearest SLOT_MAP used · missing notes: '+','.join(map(str,b.unknown))
     p += [tx(x+10,y+251,foot,"meta"),card_controls(path,b,x,y+264,w),'</g>']; return ''.join(p)
 
 def select_options(items, selected):
@@ -428,17 +495,18 @@ def card_controls(path, b, x, y, w=430, disabled=False):
     checked_export=' checked' if export_checked else ''
     checked_orn=' checked' if orn_candidate and not disabled else ''
     dup=b.duplicate_of or ""
-    return f'''<foreignObject x="{x+10}" y="{y}" width="{w-20}" height="78" class="pattern-controls-wrap">
+    return f'''<foreignObject x="{x+10}" y="{y}" width="{w-20}" height="108" class="pattern-controls-wrap">
 <div xmlns="http://www.w3.org/1999/xhtml" class="pattern-controls" data-block="{b.no}" data-start-bar="{b.bars[0].no}" data-end-bar="{b.bars[-1].no}" data-time-sig="{html.escape("→".join(f"{bar.num}/{bar.den}" for bar in b.bars) if len({(bar.num,bar.den) for bar in b.bars}) > 1 else f"{b.bars[0].num}/{b.bars[0].den}")}" data-slot-map="{html.escape(b.smap.name)}" data-duplicate-of="{dup}">
 <label><input class="export-check" type="checkbox"{checked_export}{dis}/> Export</label>
 <label>Genre <select class="genre-select"{dis}>{genre_options}</select></label>
 <label><input class="orn-check" type="checkbox"{checked_orn}{dis}/> ORN</label>
 <label>Subdivision <select class="subdivision-select" title="analysis confidence {html.escape(str(b.subdiv.get("confidence", "")))}"{dis}>{subdivision_options}</select></label>
 <label class="number-label">No. <input class="start-number" type="text" inputmode="numeric" maxlength="4" placeholder="start" aria-label="Starting pattern number"{dis}/><output class="name-preview" aria-live="polite"></output></label>
+<button class="compare-midi" type="button"{dis}>Download Compare MIDI</button>
 </div></foreignObject>'''
 
 def render(path,mid,bars_,bb,skipped_leading_bars=0):
-    cw,ch,gx,gy,mar,ncol=430,350,18,18,18,3; nrow=max(1,math.ceil(len(bb)/ncol)); sw=mar*2+ncol*cw+(ncol-1)*gx; sh=mar*2+nrow*ch+(nrow-1)*gy
+    cw,ch,gx,gy,mar,ncol=430,382,18,18,18,3; nrow=max(1,math.ceil(len(bb)/ncol)); sw=mar*2+ncol*cw+(ncol-1)*gx; sh=mar*2+nrow*ch+(nrow-1)*gy
     body=[]
     for i,b in enumerate(bb):
         x=mar+(i%ncol)*(cw+gx); y=mar+(i//ncol)*(ch+gy)
@@ -453,14 +521,117 @@ def render(path,mid,bars_,bb,skipped_leading_bars=0):
     header_parts.extend(embedded_header_metadata(mid))
     header_parts.extend([f"{len(bars_)} bar(s)",f"{len(bb)} two-bar block(s)",f"unique patterns {unique_count}",f"duplicates {duplicate_count}",f"ending hits {ending_count}",f"CH10 notes: {', '.join(map(str,notes)) or '(none)'}"])
     header_summary=html.escape(" · ".join(header_parts))
+    block_data={}
+    for b in bb:
+        if b.ending_hit or b.duplicate_of is not None:
+            continue
+        flam_analysis=detect_flams(b.events,b.subdiv.get("tpq",1),loop_ticks=b.end-b.start,loop_start=b.start)
+        excluded=set()
+        for item in flam_analysis.get("flams",[]):
+            if item.get("remove_from_subdivision") and "grace_index" in item:
+                excluded.add(int(item["grace_index"]))
+        block_data[str(b.no)]={
+            "duration":max(1,b.end-b.start),
+            "tempo":tempo_at_tick(mid,b.start),
+            "meter":[b.bars[0].num,b.bars[0].den],
+            "events":[{"tick":e.tick-b.start,"note":e.note,"vel":e.vel,"dur":e.dur,"excluded":i in excluded} for i,e in enumerate(b.events)],
+            "slots":[{"label":slot.label,"notes":list(slot.notes),"representative":slot.representative} for slot in b.smap.slots],
+        }
+    block_data_json=json.dumps(block_data,separators=(",",":"))
+    accent_levels_json=json.dumps(ACCENT_LEVELS["schemes"],separators=(",",":"),ensure_ascii=False)
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(path.name)} — ADC PatternLab</title><style>
-:root{{--bg:#f4f6f8;--panel:#fff;--ink:#17202a;--muted:#65717e;--line:#d9dee4;--major:#9aa6b2;--raw:#1f6feb;--slot:#8a3ffc;--warn:#c2410c;--v0:#dbeafe;--v1:#93c5fd;--v2:#3b82f6;--v3:#1e3a8a;--h0:#fecaca;--h1:#ef4444;--h2:#991b1b}}@media(prefers-color-scheme:dark){{:root{{--bg:#11151a;--panel:#1a2027;--ink:#e6edf3;--muted:#9da9b5;--line:#303843;--major:#66717d;--raw:#58a6ff;--slot:#c297ff;--warn:#ff9b6a;--v0:#23395d;--v1:#2f6fab;--v2:#58a6ff;--v3:#b6d8ff;--h0:#5f2525;--h1:#c24141;--h2:#ff8a8a}}}}*{{box-sizing:border-box}}body{{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink)}}header{{position:relative;z-index:3;padding:14px 18px 12px;background:var(--panel);border-bottom:1px solid var(--line)}}h1{{margin:0 0 6px;font-size:20px}}.summary{{font-size:13px;color:var(--muted)}}button{{margin-top:8px;padding:7px 11px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font-weight:700;cursor:pointer}}.legend{{margin-left:14px;font-size:12px;color:var(--muted)}}.lg{{display:inline-block;width:12px;height:12px;margin:0 3px 0 7px;vertical-align:-2px;border:1px solid var(--line)}}.v0{{background:var(--v0)}}.v1{{background:var(--v1)}}.v2{{background:var(--v2)}}.v3{{background:var(--v3)}}.h0{{background:var(--h0)}}.h1{{background:var(--h1)}}.h2{{background:var(--h2)}}main{{overflow:auto;padding:12px}}svg{{display:block;cursor:pointer;user-select:none}}.bg{{fill:var(--panel);stroke:var(--line)}}.bad .bg{{stroke:var(--warn);stroke-width:2}}.title{{fill:var(--ink);font-size:13px;font-weight:750}}.meta{{fill:var(--muted);font-size:10px}}.sid{{fill:var(--slot);font-size:12px;font-weight:800}}.warning{{fill:var(--warn);font-size:10px;font-weight:800}}.row{{fill:var(--ink);font-size:8.5px}}.guide,.rguide{{stroke:var(--line);stroke-width:.7}}.major{{stroke:var(--major);stroke-width:1.45}}.barline{{stroke:var(--ink);stroke-width:2.1;opacity:.72}}.hit{{opacity:1}}.rawduration{{stroke:var(--raw);stroke-width:1.4;stroke-linecap:round;opacity:.62}}.rawhit{{fill:var(--raw);stroke:var(--panel);stroke-width:.8}}.ghost{{stroke:var(--ink);stroke-width:1;stroke-dasharray:2 1}}.flamgrace{{fill:var(--panel);stroke:var(--raw);stroke-width:1.5;stroke-dasharray:none;opacity:1}}.flammain{{stroke:var(--raw);stroke-width:.6}}.ornnote{{fill:#dc2626!important;stroke:#7f1d1d!important;stroke-width:1.2!important;stroke-dasharray:none!important}}.ornduration{{stroke:#dc2626!important;opacity:.9!important}}.slothit{{fill:var(--slot)}}.slotcell{{stroke:var(--panel);stroke-width:.35}}.velocity0{{fill:var(--v0)}}.velocity1{{fill:var(--v1)}}.velocity2{{fill:var(--v2)}}.velocity3{{fill:var(--v3)}}svg.accentmode .slotcell.hitstrength0{{fill:var(--h0)}}svg.accentmode .slotcell.hitstrength1{{fill:var(--h1)}}svg.accentmode .slotcell.hitstrength2{{fill:var(--h2)}}.unknown{{fill:var(--warn);stroke:var(--panel)}}.subdiv-layer{{display:none}}.subdiv-layer.active{{display:inline}}.slot{{display:none}}svg.slotmode .raw{{display:none}}svg.slotmode .slot{{display:inline}}details{{margin:0 18px 18px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}}.pattern-controls-wrap{{overflow:visible}}.pattern-controls{{height:76px;display:grid;grid-template-columns:70px 1fr 52px 1.15fr;align-items:center;gap:5px 7px;padding:6px 8px;border-top:1px solid var(--line);font:11px system-ui,sans-serif;color:var(--ink);background:var(--panel)}}.pattern-controls label{{display:flex;align-items:center;gap:3px;white-space:nowrap;min-width:0}}.pattern-controls select,.pattern-controls input[type=text]{{min-width:0;width:100%;padding:3px 4px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink);font-size:10.5px}}.pattern-controls .number-label{{grid-column:2 / 5}}.pattern-controls .start-number{{max-width:62px}}.pattern-controls .name-preview{{min-width:92px;font-weight:800;color:var(--slot)}}.pattern-controls .invalid{{border-color:var(--warn)!important;outline:1px solid var(--warn)}}#number-status{{display:inline-block;margin-left:10px;font-size:12px;color:var(--muted)}}#number-status.error{{color:var(--warn);font-weight:700}}input[type=checkbox]{{width:16px;height:16px}}
-</style></head><body><header><h1>{html.escape(path.name)} — ADC PatternLab <small style="font-size:12px;color:var(--muted)">{VERSION}</small></h1><div class="summary">{header_summary}</div><button id="toggle">Toggle RAW / SLOT</button> <button id="slot-display" type="button">SLOT: Velocity</button> <button id="download-csv" type="button">Download CSV</button><span id="number-status"></span> <strong id="mode">RAW GM NOTES</strong><div class="legend">Velocity: <i class="lg v0"></i>0 (1–31) <i class="lg v1"></i>1 (32–63) <i class="lg v2"></i>2 (64–95) <i class="lg v3"></i>3 (96–127)</div><div class="legend">ADX Accent: <i class="lg h0"></i>Weak Hit (1–60) <i class="lg h1"></i>Medium Hit (61–100) <i class="lg h2"></i>Strong Hit (101–127)</div><div class="legend">RAW: <i class="lg" style="background:#dc2626;border-color:#7f1d1d"></i> ORN-detected note · hover for reason</div></header><main><svg id="matrix" xmlns="http://www.w3.org/2000/svg" width="{sw}" height="{sh}" viewBox="0 0 {sw} {sh}">{''.join(body)}</svg></main><details><summary>Analysis notes</summary><p>Each block is checked only against earlier blocks in the same MIDI file. Exact identity uses relative tick, raw note, velocity, and note duration. A repeated block keeps its original Pattern number and omits the matrix drawing.</p><p>A final odd bar containing only one onset group at its beginning is labeled ENDING HIT and excluded from the pattern catalog.</p><p>Each card initially uses the automatically detected subdivision. Its own Subdivision selector can immediately switch the reference grid and SLOT quantization among 16, 8T, and 16T without affecting other cards. Reloading the HTML restores the original automatic selections.</p><p>If no SLOT_MAP covers every note, the nearest map is used, the card receives a red border, and uncovered MIDI notes are listed as MISSING NOTES. Ties fall back conservatively toward lower IDs, beginning with LEGACY 12.</p><p>RAW view places every note-on circle at its original MIDI tick position and extends a horizontal line to the recorded note-off position. Very short durations receive a two-pixel minimum display line; the note-on position itself is never moved. The vertical subdivision lines are reference overlays only; changing a card’s Subdivision selector never moves RAW notes. Velocity controls circle size. Notes that currently trigger automatic ORN candidacy are shown in red in RAW view: velocity ≤ 30 ghost candidates and the grace note of each detected flam pair. Hovering a red note shows the exact reason, including velocity threshold or flam confidence, tick gap, threshold, and whether the grace is removed from subdivision. Flam main hits remain blue because they stay in the ADX grid.</p><p>In SLOT view, each retained hit fills its complete quantized cell. The SLOT display button switches between the original four-band MIDI Velocity view and the ADX Accent preview. ADX Accent shows three hit strengths: Weak Hit (velocity 1–60), Medium Hit (61–100), and Strong Hit (101–127). An empty cell already represents no hit, and every positive velocity remains visible as one of the three hit strengths. Flam grace notes marked for removal from subdivision are intentionally omitted there and belong to ORN; the main hit remains in the grid. Ghost candidates that are not classified as removable flam grace notes remain visible. When multiple retained raw hits collapse into one slot/cell, the strongest velocity is shown.</p><p>SLOT_MAP usage: <code>{html.escape(json.dumps(summary,ensure_ascii=False))}</code></p><p>The shared adc_rhythm_analysis module owns the complete subdivision decision: flam detection, grace-note exclusion, onset phase, note-duration evidence, and conservative filename hints. The same flam-filtered events are used for both phase and duration scoring. Beat anchors and the shared half-beat remain excluded from phase evidence.</p></details><script>(()=>{{
-const s=document.getElementById('matrix'),m=document.getElementById('mode'),slotDisplay=document.getElementById('slot-display');
-function t(){{const v=s.classList.toggle('slotmode');m.textContent=v?(s.classList.contains('accentmode')?'2-BAR SLOT_MAP · ADX ACCENT':'2-BAR SLOT_MAP · VELOCITY'):'RAW GM NOTES'}}
-function toggleSlotDisplay(){{const accent=s.classList.toggle('accentmode');slotDisplay.textContent=accent?'SLOT: ADX Accent':'SLOT: Velocity';if(s.classList.contains('slotmode'))m.textContent=accent?'2-BAR SLOT_MAP · ADX ACCENT':'2-BAR SLOT_MAP · VELOCITY';}}
+:root{{--bg:#f4f6f8;--panel:#fff;--ink:#17202a;--muted:#65717e;--line:#d9dee4;--major:#9aa6b2;--raw:#1f6feb;--slot:#8a3ffc;--warn:#c2410c;--v0:#dbeafe;--v1:#93c5fd;--v2:#3b82f6;--v3:#1e3a8a;--h0:#fecaca;--h1:#ef4444;--h2:#991b1b}}@media(prefers-color-scheme:dark){{:root{{--bg:#11151a;--panel:#1a2027;--ink:#e6edf3;--muted:#9da9b5;--line:#303843;--major:#66717d;--raw:#58a6ff;--slot:#c297ff;--warn:#ff9b6a;--v0:#23395d;--v1:#2f6fab;--v2:#58a6ff;--v3:#b6d8ff;--h0:#5f2525;--h1:#c24141;--h2:#ff8a8a}}}}*{{box-sizing:border-box}}body{{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink)}}header{{position:relative;z-index:3;padding:14px 18px 12px;background:var(--panel);border-bottom:1px solid var(--line)}}h1{{margin:0 0 6px;font-size:20px}}.summary{{font-size:13px;color:var(--muted)}}button{{margin-top:8px;padding:7px 11px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font-weight:700;cursor:pointer}}.legend{{margin-left:14px;font-size:12px;color:var(--muted)}}.lg{{display:inline-block;width:12px;height:12px;margin:0 3px 0 7px;vertical-align:-2px;border:1px solid var(--line)}}.v0{{background:var(--v0)}}.v1{{background:var(--v1)}}.v2{{background:var(--v2)}}.v3{{background:var(--v3)}}.h0{{background:var(--h0)}}.h1{{background:var(--h1)}}.h2{{background:var(--h2)}}main{{overflow:auto;padding:12px}}svg{{display:block;cursor:pointer;user-select:none}}.bg{{fill:var(--panel);stroke:var(--line)}}.bad .bg{{stroke:var(--warn);stroke-width:2}}.title{{fill:var(--ink);font-size:13px;font-weight:750}}.meta{{fill:var(--muted);font-size:10px}}.sid{{fill:var(--slot);font-size:12px;font-weight:800}}.warning{{fill:var(--warn);font-size:10px;font-weight:800}}.row{{fill:var(--ink);font-size:8.5px}}.guide,.rguide{{stroke:var(--line);stroke-width:.7}}.major{{stroke:var(--major);stroke-width:1.45}}.barline{{stroke:var(--ink);stroke-width:2.1;opacity:.72}}.hit{{opacity:1}}.rawduration{{stroke-width:1.4;stroke-linecap:round;opacity:.72}}.rawhit{{stroke:var(--panel);stroke-width:.8}}.unknown-row{{fill:#dc2626!important;font-weight:800}}.deviation-aligned.rawhit{{fill:#2563eb}}.deviation-near.rawhit{{fill:#0891b2}}.deviation-moderate.rawhit{{fill:#f59e0b}}.deviation-far.rawhit{{fill:#dc2626}}.deviation-aligned.rawduration{{stroke:#2563eb}}.deviation-near.rawduration{{stroke:#0891b2}}.deviation-moderate.rawduration{{stroke:#f59e0b}}.deviation-far.rawduration{{stroke:#dc2626}}.ghost{{stroke:var(--ink);stroke-width:1;stroke-dasharray:2 1}}.flamgrace{{stroke-width:1.5;stroke-dasharray:none;opacity:1}}.flammain{{stroke-width:.8}}.ornnote{{fill:#7c3aed!important;stroke:#4c1d95!important;stroke-width:1.2!important;stroke-dasharray:none!important}}.ornduration{{stroke:#7c3aed!important;opacity:.95!important}}.slothit{{fill:var(--slot)}}.slotcell{{stroke:var(--panel);stroke-width:.35}}.velocity0{{fill:var(--v0)}}.velocity1{{fill:var(--v1)}}.velocity2{{fill:var(--v2)}}.velocity3{{fill:var(--v3)}}svg.accentmode .slotcell.hitstrength0{{fill:var(--h0)}}svg.accentmode .slotcell.hitstrength1{{fill:var(--h1)}}svg.accentmode .slotcell.hitstrength2{{fill:var(--h2)}}.unknown{{fill:var(--warn);stroke:var(--panel)}}.subdiv-layer{{display:none}}.subdiv-layer.active{{display:inline}}.slot{{display:none}}svg.slotmode .raw{{display:none}}svg.slotmode .slot{{display:inline}}details{{margin:0 18px 18px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel)}}.pattern-controls-wrap{{overflow:visible}}.pattern-controls{{height:106px;display:grid;grid-template-columns:70px 1fr 52px 1.15fr;grid-template-rows:28px 28px 32px;align-items:center;gap:5px 7px;padding:6px 8px;border-top:1px solid var(--line);font:11px system-ui,sans-serif;color:var(--ink);background:var(--panel)}}.pattern-controls label{{display:flex;align-items:center;gap:3px;white-space:nowrap;min-width:0}}.pattern-controls select,.pattern-controls input[type=text]{{min-width:0;width:100%;padding:3px 4px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink);font-size:10.5px}}.pattern-controls .number-label{{grid-column:1 / 5}}.pattern-controls .compare-midi{{grid-column:1 / 5;margin:0;padding:6px 8px;font-size:11px;background:var(--slot);color:#fff;border-color:var(--slot)}}.pattern-controls .start-number{{max-width:62px}}.pattern-controls .name-preview{{min-width:92px;font-weight:800;color:var(--slot)}}.pattern-controls .invalid{{border-color:var(--warn)!important;outline:1px solid var(--warn)}}#number-status{{display:inline-block;margin-left:10px;font-size:12px;color:var(--muted)}}#number-status.error{{color:var(--warn);font-weight:700}}input[type=checkbox]{{width:16px;height:16px}}
+</style></head><body><header><h1>{html.escape(path.name)} — ADC PatternLab <small style="font-size:12px;color:var(--muted)">{VERSION}</small></h1><div class="summary">{header_summary}</div><button id="toggle">Toggle RAW / QUANTIZED</button> <button id="slot-display" type="button" class="quantized-only">QUANTIZED: Velocity</button> <button id="download-csv" type="button">Download CSV</button> <span class="legend">No browser audio · card MIDI export only</span><span id="number-status"></span> <strong id="mode">RAW GM NOTES</strong><div class="legend">Velocity: <i class="lg v0"></i>0 (1–31) <i class="lg v1"></i>1 (32–63) <i class="lg v2"></i>2 (64–95) <i class="lg v3"></i>3 (96–127)</div><div class="legend">ADX Accent: <i class="lg h0"></i>Weak Hit (1–60) <i class="lg h1"></i>Medium Hit (61–100) <i class="lg h2"></i>Strong Hit (101–127)</div><div class="legend">RAW grid deviation: <i class="lg" style="background:#2563eb"></i> aligned <i class="lg" style="background:#0891b2"></i> near <i class="lg" style="background:#f59e0b"></i> moderate <i class="lg" style="background:#dc2626"></i> far</div><div class="legend">RAW: <i class="lg" style="background:#7c3aed;border-color:#4c1d95"></i> ORN candidate (priority color) · red row label = outside SLOT_MAP</div></header><main><svg id="matrix" xmlns="http://www.w3.org/2000/svg" width="{sw}" height="{sh}" viewBox="0 0 {sw} {sh}">{''.join(body)}</svg></main><details><summary>Analysis notes</summary><p>Each block is checked only against earlier blocks in the same MIDI file. Pattern identity uses only relative onset tick and raw MIDI note. Velocity and note duration are ignored. A repeated block keeps its original Pattern number and omits the matrix drawing.</p><p>A final odd bar containing only one onset group at its beginning is labeled ENDING HIT and excluded from the pattern catalog.</p><p>Each card initially uses the automatically detected subdivision. Its own Subdivision selector can immediately switch the reference grid and SLOT quantization among 16, 8T, and 16T without affecting other cards. Reloading the HTML restores the original automatic selections.</p><p>If no SLOT_MAP covers every note, the nearest map is used, the card receives a red border, and uncovered MIDI notes are listed as MISSING NOTES. Ties fall back conservatively toward lower IDs, beginning with LEGACY 12.</p><p>RAW view places every note-on circle at its original MIDI tick position and extends a horizontal line to the recorded note-off position. Very short durations receive a two-pixel minimum display line; the note-on position itself is never moved. The vertical subdivision lines are reference overlays only; changing a card’s Subdivision selector never moves RAW notes. Velocity controls circle size. RAW note colors indicate distance from the nearest line of the currently selected subdivision and are recalculated independently for each card whenever its Subdivision selector changes. Notes that currently trigger automatic ORN candidacy are shown in purple, overriding deviation color: velocity ≤ 30 ghost candidates and the grace note of each detected flam pair. Hovering a purple note shows the exact reason, including velocity threshold or flam confidence, tick gap, threshold, and whether the grace is removed from subdivision. Flam main hits remain blue because they stay in the ADX grid.</p><p>In SLOT view, each retained hit fills its complete quantized cell. The QUANTIZED display button switches between the original four-band MIDI Velocity view and the ADX Accent preview. Each non-duplicate card can also export one comparison MIDI containing RAW ×2, QUANTIZED 4-state ×2, and QUANTIZED 6-state ×2, separated by one quarter-note beat. ADX Accent shows three hit strengths: Weak Hit (velocity 1–60), Medium Hit (61–100), and Strong Hit (101–127). An empty cell already represents no hit, and every positive velocity remains visible as one of the three hit strengths. Flam grace notes marked for removal from subdivision are intentionally omitted there and belong to ORN; the main hit remains in the grid. Ghost candidates that are not classified as removable flam grace notes remain visible. When multiple retained raw hits collapse into one slot/cell, the strongest velocity is shown.</p><p>SLOT_MAP usage: <code>{html.escape(json.dumps(summary,ensure_ascii=False))}</code></p><p>The shared adc_rhythm_analysis module owns the complete subdivision decision: flam detection, grace-note exclusion, onset phase, note-duration evidence, and conservative filename hints. The same flam-filtered events are used for both phase and duration scoring. Beat anchors and the shared half-beat remain excluded from phase evidence.</p></details><script>(()=>{{
+const s=document.getElementById('matrix'),m=document.getElementById('mode'),slotDisplay=document.getElementById('slot-display');slotDisplay.style.display='none';
+const BLOCK_DATA={block_data_json};
+const ACCENT_SCHEMES={accent_levels_json};
+const TPQ={mid.ticks_per_beat};
+const SOURCE_STEM={json.dumps(path.stem)};
+function t(){{const v=s.classList.toggle('slotmode');m.textContent=v?(s.classList.contains('accentmode')?'QUANTIZED SLOT MAP · ACCENT':'QUANTIZED SLOT MAP · VELOCITY'):'RAW GM NOTES';slotDisplay.style.display=v?'inline-block':'none'}}
+function toggleSlotDisplay(){{const accent=s.classList.toggle('accentmode');slotDisplay.textContent=accent?'QUANTIZED: Accent':'QUANTIZED: Velocity';if(s.classList.contains('slotmode'))m.textContent=accent?'QUANTIZED SLOT MAP · ACCENT':'QUANTIZED SLOT MAP · VELOCITY';}}
 s.addEventListener('click',e=>{{if(!e.target.closest('.pattern-controls'))t()}});document.getElementById('toggle').addEventListener('click',t);slotDisplay.addEventListener('click',toggleSlotDisplay);
 function csvCell(value){{const x=String(value??'');return /[",\\n]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x}}
+function writeU16(a,v){{a.push((v>>8)&255,v&255)}}
+function writeU32(a,v){{a.push((v>>>24)&255,(v>>>16)&255,(v>>>8)&255,v&255)}}
+function writeVar(a,v){{let buffer=v&0x7f;while((v>>=7)){{buffer<<=8;buffer|=((v&0x7f)|0x80)}}for(;;){{a.push(buffer&255);if(buffer&0x80)buffer>>=8;else break}}}}
+function asciiBytes(text){{return [...new TextEncoder().encode(text)]}}
+function quantizedVelocity(v,schemeName){{
+  const scheme=ACCENT_SCHEMES[schemeName];
+  if(!scheme||!Array.isArray(scheme.levels))throw new Error(`Missing accent scheme: ${{schemeName}}`);
+  const value=Math.max(0,Math.min(127,Number(v)||0));
+  const level=scheme.levels.find(item=>value>=item.min_velocity&&value<=item.max_velocity);
+  if(!level)throw new Error(`Velocity ${{value}} is not covered by ${{schemeName}}`);
+  return level.representative_velocity;
+}}
+function slotForNote(slots,note){{for(let i=0;i<slots.length;i++)if(slots[i].notes.includes(note))return i;return -1}}
+function quantizedEvents(data,subdiv,levels){{
+  const cpb={{'16':4,'8T':3,'16T':6}}[subdiv]||4;
+  const beats=data.duration/TPQ;
+  const cols=Math.max(1,Math.round(beats*cpb));
+  const stepTicks=data.duration/cols;
+  const cells=new Map();
+  data.events.forEach(ev=>{{
+    if(ev.excluded)return;
+    const si=slotForNote(data.slots,ev.note);if(si<0)return;
+    const cell=Math.max(0,Math.min(cols-1,Math.floor(ev.tick/data.duration*cols+0.5)));
+    const key=si+':'+cell;const prev=cells.get(key);
+    if(!prev||ev.vel>prev.vel)cells.set(key,ev);
+  }});
+  const out=[];
+  cells.forEach((ev,key)=>{{
+    const [siText,cellText]=key.split(':');const si=Number(siText),cell=Number(cellText);
+    const start=Math.round(cell*stepTicks);
+    const duration=Math.max(1,Math.min(Math.max(1,ev.dur||Math.round(TPQ/8)),data.duration-start));
+    out.push({{tick:start,note:data.slots[si].representative,vel:quantizedVelocity(ev.vel,levels===4?'4-accent':'6-accent'),dur:duration}});
+  }});
+  return out.sort((a,b)=>a.tick-b.tick||a.note-b.note);
+}}
+function addRepeatedSection(target,events,start,duration,label){{
+  target.push({{tick:start,type:'marker',text:label}});
+  for(let rep=0;rep<2;rep++){{
+    const base=start+rep*duration;
+    events.forEach(ev=>{{
+      const on=base+Math.max(0,Math.min(duration-1,Math.round(ev.tick)));
+      const off=Math.max(on+1,Math.min(base+duration,on+Math.max(1,Math.round(ev.dur||1))));
+      target.push({{tick:on,type:'on',note:ev.note,vel:ev.vel}});
+      target.push({{tick:off,type:'off',note:ev.note,vel:0}});
+    }});
+  }}
+  return start+duration*2;
+}}
+function makeComparisonMidi(data,subdiv){{
+  const events=[];let cursor=0;
+  const raw=data.events.map(ev=>({{tick:ev.tick,note:ev.note,vel:ev.vel,dur:ev.dur}}));
+  cursor=addRepeatedSection(events,raw,cursor,data.duration,'RAW x2');cursor+=TPQ;
+  cursor=addRepeatedSection(events,quantizedEvents(data,subdiv,4),cursor,data.duration,'QUANTIZED 4-STATE x2');cursor+=TPQ;
+  cursor=addRepeatedSection(events,quantizedEvents(data,subdiv,6),cursor,data.duration,'QUANTIZED 6-STATE x2');
+  const [num,den]=data.meter||[4,4];const dd=Math.max(0,Math.round(Math.log2(den||4)));
+  events.push({{tick:0,type:'tempo',tempo:data.tempo||500000}});
+  events.push({{tick:0,type:'timesig',num:num||4,dd}});
+  events.push({{tick:cursor+1,type:'end'}});
+  const order={{tempo:0,timesig:1,marker:2,off:3,on:4,end:9}};
+  events.sort((a,b)=>a.tick-b.tick||(order[a.type]-order[b.type])||((a.note||0)-(b.note||0)));
+  const track=[];let last=0;
+  events.forEach(ev=>{{
+    writeVar(track,Math.max(0,ev.tick-last));last=ev.tick;
+    if(ev.type==='tempo'){{const t=ev.tempo;track.push(0xff,0x51,0x03,(t>>16)&255,(t>>8)&255,t&255)}}
+    else if(ev.type==='timesig'){{track.push(0xff,0x58,0x04,ev.num&255,ev.dd&255,24,8)}}
+    else if(ev.type==='marker'){{const b=asciiBytes(ev.text);track.push(0xff,0x06);writeVar(track,b.length);track.push(...b)}}
+    else if(ev.type==='on')track.push(0x99,ev.note&127,Math.max(1,Math.min(127,ev.vel|0)))
+    else if(ev.type==='off')track.push(0x89,ev.note&127,0)
+    else if(ev.type==='end')track.push(0xff,0x2f,0x00);
+  }});
+  const file=[...asciiBytes('MThd')];writeU32(file,6);writeU16(file,0);writeU16(file,1);writeU16(file,TPQ);
+  file.push(...asciiBytes('MTrk'));writeU32(file,track.length);file.push(...track);
+  return new Uint8Array(file);
+}}
+function downloadComparison(panel){{
+  const data=BLOCK_DATA[String(panel.dataset.block)];if(!data){{alert('Comparison MIDI is unavailable for this card.');return}}
+  const subdiv=panel.querySelector('.subdivision-select')?.value||'16';
+  const bytes=makeComparisonMidi(data,subdiv);const blob=new Blob([bytes],{{type:'audio/midi'}});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${{SOURCE_STEM}}_B${{String(panel.dataset.block).padStart(3,'0')}}_${{subdiv}}_compare.MID`;
+  document.body.appendChild(a);a.click();setTimeout(()=>{{URL.revokeObjectURL(a.href);a.remove()}},0);
+}}
 function allPanels(){{return [...document.querySelectorAll('.pattern-controls')]}}
 function exportedPanels(){{
   return allPanels().filter(panel=>{{
@@ -547,6 +718,21 @@ function calculateNames(showAlert=false){{
   if(errors.length && showAlert)alert('Cannot download CSV:\\n\\n'+errors.join('\\n'));
   return errors.length===0;
 }}
+function updateRawDeviation(card, selected){{
+  const cellsPerBeat={{'16':4,'8T':3,'16T':6}}[selected]||4;
+  const duration=Number(card.dataset.durationTicks)||1;
+  const beats=duration/Number({mid.ticks_per_beat});
+  const cols=Math.max(1,Math.round(beats*cellsPerBeat));
+  const stepTicks=duration/cols;
+  card.querySelectorAll('.raw-event[data-tick-offset]').forEach(el=>{{
+    const offset=Number(el.dataset.tickOffset)||0;
+    const nearest=Math.round(offset/stepTicks)*stepTicks;
+    const ratio=Math.abs(offset-nearest)/stepTicks;
+    el.classList.remove('deviation-aligned','deviation-near','deviation-moderate','deviation-far');
+    const cls=ratio<=0.05?'deviation-aligned':ratio<=0.15?'deviation-near':ratio<=0.30?'deviation-moderate':'deviation-far';
+    el.classList.add(cls);
+  }});
+}}
 function applySubdivision(panel){{
   const select=panel.querySelector('.subdivision-select');
   if(!select || select.disabled)return;
@@ -556,6 +742,7 @@ function applySubdivision(panel){{
   card.querySelectorAll('.subdiv-layer').forEach(layer=>{{layer.classList.toggle('active',layer.dataset.subdiv===selected);}});
   const summary=card.querySelector('.grid-summary');
   if(summary){{const cells={{'16':4,'8T':3,'16T':6}}[selected]||4;summary.textContent=(summary.dataset.prefix||'')+cells+' cells/beat';}}
+  updateRawDeviation(card,selected);
 }}
 allPanels().forEach(panel=>{{
   const input=panel.querySelector('.start-number');
@@ -564,6 +751,8 @@ allPanels().forEach(panel=>{{
   panel.querySelector('.export-check').addEventListener('change',()=>calculateNames(false));
   const subdivision=panel.querySelector('.subdivision-select');
   if(subdivision){{subdivision.addEventListener('change',()=>{{applySubdivision(panel);calculateNames(false)}});applySubdivision(panel);}}
+  const compare=panel.querySelector('.compare-midi');
+  if(compare&&!compare.disabled)compare.addEventListener('click',e=>{{e.stopPropagation();downloadComparison(panel)}});
 }});
 calculateNames(false);
 document.getElementById('download-csv').addEventListener('click',()=>{{
@@ -584,16 +773,32 @@ document.getElementById('download-csv').addEventListener('click',()=>{{
 }})();</script></body></html>'''
 
 def main(argv=None):
-    p=argparse.ArgumentParser(prog=SCRIPT_NAME,description="Generate an interactive HTML/SVG drum pattern catalog from one MIDI file."); p.add_argument("input_midi",type=Path); p.add_argument("-o","--output",type=Path); p.add_argument("--slot-maps",type=Path,help="Canonical slot_map_definitions.json (default: beside this script)"); p.add_argument("--skip-leading-empty-bars",action="store_true",help="omit leading bars without CH10 note-on events while preserving absolute bar numbers"); p.add_argument("--version",action="version",version=VERSION_TEXT); a=p.parse_args(argv)
+    p=argparse.ArgumentParser(prog=SCRIPT_NAME,description="Generate an interactive HTML/SVG drum pattern catalog from one MIDI file."); p.add_argument("input_midi",type=Path); p.add_argument("-o","--output",type=Path); p.add_argument("--slot-maps",type=Path,help="Canonical slot_map_definitions.json (default: beside this script)"); p.add_argument("--accent-levels",type=Path,help="accent_levels.json with 4-accent and 6-accent boundaries/representatives (default: beside this script)"); p.add_argument("--skip-leading-empty-bars",action="store_true",help="omit leading bars without CH10 note-on events while preserving absolute bar numbers"); p.add_argument("--version",action="version",version=VERSION_TEXT); a=p.parse_args(argv)
     if not a.input_midi.is_file():print(f'[ERROR] not found: {a.input_midi}',file=sys.stderr);return 2
     slot_map_path=a.slot_maps or Path(__file__).with_name("slot_map_definitions.json")
-    global MAPS
-    try:MAPS=load_slot_maps(slot_map_path)
+    accent_level_path=a.accent_levels or Path(__file__).with_name("accent_levels.json")
+    global MAPS,ACCENT_LEVELS
+    try:
+        MAPS=load_slot_maps(slot_map_path)
+        ACCENT_LEVELS=load_accent_levels(accent_level_path)
     except ValueError as e:print(f'[ERROR] {e}',file=sys.stderr);return 2
     try:mid=MidiFile(str(a.input_midi))
     except Exception as e:print(f'[ERROR] cannot read MIDI: {e}',file=sys.stderr);return 2
     ev,ts,mx=collect(mid); all_bars=make_bars(mid.ticks_per_beat,ts,mx); bars_=all_bars; skipped=0
     if a.skip_leading_empty_bars:
         bars_,skipped=skip_leading_empty_bars(all_bars,ev)
-    bb=blocks(bars_,ev,mid.ticks_per_beat,a.input_midi.name); out=a.output or a.input_midi.with_name(a.input_midi.stem+'_patternlab.html'); out.write_text(render(a.input_midi,mid,bars_,bb,skipped),encoding='utf-8'); print(VERSION_TEXT); print(f'[OK] {out}'); print(f'[OK] bars={len(bars_)}, blocks={len(bb)}, drum_note_on={len(ev)}, skipped_leading_empty_bars={skipped}'); return 0
+    bb=blocks(bars_,ev,mid.ticks_per_beat,a.input_midi.name)
+    out=a.output or a.input_midi.with_name(a.input_midi.stem+'_PatternLab.html')
+    # Windows preserves an existing directory entry's old letter case when the
+    # same case-insensitive filename is opened again. Remove a legacy
+    # *_patternlab.html entry first so the requested *_PatternLab.html spelling
+    # is actually recorded on disk.
+    if a.output is None:
+        legacy=a.input_midi.with_name(a.input_midi.stem+'_patternlab.html')
+        if legacy.exists() and legacy.resolve() != out.resolve():
+            legacy.unlink()
+        elif legacy.exists() and legacy.name != out.name:
+            legacy.unlink()
+    out.write_text(render(a.input_midi,mid,bars_,bb,skipped),encoding='utf-8')
+    print(VERSION_TEXT); print(f'[OK] {out}'); print(f'[OK] bars={len(bars_)}, blocks={len(bb)}, drum_note_on={len(ev)}, skipped_leading_empty_bars={skipped}'); return 0
 if __name__=='__main__':raise SystemExit(main())
