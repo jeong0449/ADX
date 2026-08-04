@@ -56,7 +56,7 @@ This separation clearly distinguishes the embedded playback platform (**Nano Ard
                             ▼
                            Play
                             │
-          ADX Player • Nano Ardule • Fluid Ardule
+          ADX Drum Player • Nano Ardule • Fluid Ardule
 ```
 
 The ADX Platform consists of four major components:
