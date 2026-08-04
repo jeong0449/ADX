@@ -10,6 +10,9 @@ Default behavior is read-only:
 - channel/program summary
 - drum-channel summary
 
+This inspector reports recorded MIDI facts only; subdivision and other
+rhythm interpretation belong to adc-mid2report.py / adc_rhythm_analysis.py.
+
 Optional:
 - --dump
 - --dump-drums
@@ -18,7 +21,7 @@ Optional:
 - --write-drum-roll
 
 Created: 2026-08-02
-Version: 260805a
+Version: 260805c
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from mido import Message, MetaMessage, MidiFile, MidiTrack, merge_tracks, tempo2
 
 
 SCRIPT_NAME = "adc-midi-inspector.py"
-VERSION = "260805b"
+VERSION = "260805c"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 DRUM_CHANNEL = 9  # MIDI channel 10, zero-based
@@ -809,7 +812,7 @@ def write_drum_roll_html(
                 if note.note not in note_index:
                     continue
                 y = plot_top + note_index[note.note] * row_height + row_height / 2
-                radius = 2.0 + 2.0 * note.velocity / 127
+                radius = 1.75 + 1.75 * note.velocity / 127
                 instrument = GM_DRUM_NAMES.get(
                     note.note,
                     "Unknown / non-GM drum note",
