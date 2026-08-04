@@ -2,13 +2,13 @@
 
 **Analyze • Abstract • Exchange • Play**
 
-The ADX Platform is an open software ecosystem for transforming Standard MIDI drum performances into reusable, shareable, and playable drum patterns.
+The ADX Platform is an open software ecosystem for analyzing, abstracting, exchanging, and playing reusable drum patterns based on Standard MIDI drum performances.
 
 ---
 
 ## Why ADX?
 
-The **ADX** project evolved from the **ADT/ADP** drum pattern format family.
+The **ADX** platform evolved from the **ADT/ADP** drum pattern format family.
 
 - **ADT** (*Ardule Drum Text*) is the human-readable drum pattern format.
 - **ADP** (*Ardule Drum Pattern*) is the compact binary cache format generated from ADT for efficient storage and playback.
