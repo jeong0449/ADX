@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Local PatternLab playback service using FluidSynth and an SF2 SoundFont.
 
-Version: 260804c
+Version: 260805b
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ except ImportError:
     MidiFile = None
 
 SCRIPT_NAME = "play_server.py"
-VERSION = "260804c"
+VERSION = "260805b"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 HOST = "127.0.0.1"
@@ -35,6 +35,36 @@ DEFAULT_PORT = 8123
 MAX_MIDI_BYTES = 16 * 1024 * 1024
 DEFAULT_FLUIDSYNTH = Path(r"C:\Tools\FluidSynth\bin\fluidsynth.exe")
 DEFAULT_SOUNDFONT = Path(r"C:\SoundFonts\GeneralUser-GS.sf2")
+
+
+NO_REPORT_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADX PatternLab Playback Server</title>
+<style>
+body { margin: 0; font-family: system-ui, sans-serif; background: #f4f6f8; color: #1f2933; }
+main { max-width: 760px; margin: 64px auto; padding: 28px; background: white; border: 1px solid #d9e0e7; border-radius: 12px; }
+h1 { margin-top: 0; font-size: 1.55rem; }
+p { line-height: 1.6; }
+pre { overflow-x: auto; padding: 14px; background: #f0f3f6; border-radius: 8px; font-family: Consolas, monospace; }
+.note { color: #5f6b76; }
+</style>
+</head>
+<body>
+<main>
+<h1>ADX PatternLab Playback Server</h1>
+<p>No PatternLab report was specified.</p>
+<p>Start the server with a report filename:</p>
+<pre>python play_server.py --report COOL_PatternLab.html</pre>
+<p>For a report in another directory:</p>
+<pre>python play_server.py --directory reports --report COOL_PatternLab.html</pre>
+<p class="note">Directory listing remains disabled for safety.</p>
+</main>
+</body>
+</html>
+"""
 
 
 class PlayerState:
@@ -204,7 +234,7 @@ class MidiLibrary:
         return resolved
 
 
-def make_handler(player: PlayerState, directory: Path, library: MidiLibrary):
+def make_handler(player: PlayerState, directory: Path, library: MidiLibrary, report_selected: bool):
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(directory), **kwargs)
@@ -237,6 +267,15 @@ def make_handler(player: PlayerState, directory: Path, library: MidiLibrary):
             # The generated report is self-contained. Serve HTML only; do not
             # turn the playback service into a general local-file web server.
             request_path = urlparse(self.path).path
+            if request_path == "/" and not report_selected:
+                body = NO_REPORT_HTML.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return None
             if request_path.endswith("/"):
                 return self.list_directory(str(directory))
             suffix = Path(request_path).suffix.lower()
@@ -362,7 +401,20 @@ def resolve_soundfont(explicit: Path | None, parser: argparse.ArgumentParser) ->
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Serve PatternLab reports and play posted MIDI through FluidSynth.")
+    parser = argparse.ArgumentParser(
+        description="Serve a PatternLab HTML report with ADX playback support.",
+        epilog=(
+            "Examples:\n"
+            "  python play_server.py --report COOL_PatternLab.html\n"
+            "  python play_server.py --directory reports --report COOL_PatternLab.html"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=VERSION_TEXT,
+    )
     parser.add_argument(
         "--fluidsynth",
         type=existing_file,
@@ -379,7 +431,8 @@ def main() -> int:
         help=f"override SoundFont path; default: {DEFAULT_SOUNDFONT}",
     )
     parser.add_argument("--directory", type=Path, default=Path.cwd(), help="folder containing PatternLab HTML reports")
-    parser.add_argument("--report", help="report filename to open automatically, e.g. ALLSTARS_PatternLab.html")
+    parser.add_argument("--report", metavar="HTML", required=True,
+                        help="PatternLab HTML report to open automatically")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--audio-driver", default="dsound", help="FluidSynth audio driver (default: dsound)")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser automatically")
@@ -397,7 +450,7 @@ def main() -> int:
     player = PlayerState(fluidsynth, soundfont, args.audio_driver)
     library = MidiLibrary(directory)
     library.refresh()
-    handler = make_handler(player, directory, library)
+    handler = make_handler(player, directory, library, report_selected=bool(args.report))
     server = ThreadingHTTPServer((HOST, args.port), handler)
     base_url = f"http://{HOST}:{args.port}/"
     open_url = base_url
@@ -435,6 +488,11 @@ def main() -> int:
     print(f"  FluidSynth : {fluidsynth} ({fluidsynth_source})")
     print(f"  SoundFont  : {soundfont} ({soundfont_source})")
     print("  Stop server: Ctrl+C")
+    if not args.report:
+        print()
+        print("No report specified.")
+        print("Example:")
+        print("  python play_server.py --report COOL_PatternLab.html")
 
     if not args.no_browser:
         webbrowser.open(open_url)
