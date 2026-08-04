@@ -18,7 +18,7 @@ Optional:
 - --write-drum-roll
 
 Created: 2026-08-02
-Version: 260802f
+Version: 260805a
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from mido import Message, MetaMessage, MidiFile, MidiTrack, merge_tracks, tempo2
 
 
 SCRIPT_NAME = "adc-midi-inspector.py"
-VERSION = "260802f"
+VERSION = "260805b"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 DRUM_CHANNEL = 9  # MIDI channel 10, zero-based
@@ -650,6 +650,7 @@ def write_drum_roll_html(
     ts_map: Sequence[TimeSignaturePoint],
     slot_maps: Sequence[SlotMapDefinition],
     bars_per_row: int,
+    show_all_notes: bool,
     output_dir: Optional[Path],
 ) -> Path:
     drum_notes = [note for note in notes if note.channel == DRUM_CHANNEL]
@@ -658,7 +659,7 @@ def write_drum_roll_html(
 
     used_notes = {note.note for note in drum_notes}
     slot_map = choose_slot_map(slot_maps, used_notes)
-    note_order = map_note_order(used_notes, slot_map)
+    global_note_order = map_note_order(used_notes, slot_map)
     max_tick = max(note.end_tick for note in drum_notes)
     spans = bar_spans(max_tick, mid.ticks_per_beat, ts_map)
     rows = [
@@ -666,27 +667,55 @@ def write_drum_roll_html(
         for index in range(0, len(spans), bars_per_row)
     ]
 
-    label_width = 168
+    label_width = 160
     bar_width = 112
-    row_height = 22
-    header_height = 58
-    footer_height = 28
-    system_gap = 34
-    plot_height = max(1, len(note_order)) * row_height
-    system_height = header_height + plot_height + footer_height
-    svg_width = label_width + bars_per_row * bar_width + 34
-    svg_height = 76 + len(rows) * (system_height + system_gap)
+    row_height = 19
+    header_height = 54
+    footer_height = 24
+    system_gap = 26
 
-    note_y = {
-        note: header_height + index * row_height + row_height / 2
-        for index, note in enumerate(note_order)
-    }
+    # Compact mode is the default: each system displays only instruments that
+    # actually occur inside that system. --show-all-notes restores a stable
+    # file-wide row set for every system.
+    system_layouts = []
+    next_origin_y = 76
+    for system_bars in rows:
+        system_start = system_bars[0][1]
+        system_end = system_bars[-1][2]
+        if show_all_notes:
+            system_note_order = list(global_note_order)
+        else:
+            system_used_notes = {
+                note.note
+                for note in drum_notes
+                if system_start <= note.start_tick < system_end
+            }
+            system_note_order = map_note_order(system_used_notes, slot_map)
+        if not system_note_order:
+            system_note_order = list(global_note_order[:1])
+
+        plot_height = max(1, len(system_note_order)) * row_height
+        system_height = header_height + plot_height + footer_height
+        system_layouts.append(
+            {
+                "bars": system_bars,
+                "notes": system_note_order,
+                "origin_y": next_origin_y,
+                "plot_height": plot_height,
+                "system_height": system_height,
+            }
+        )
+        next_origin_y += system_height + system_gap
+
+    svg_width = label_width + bars_per_row * bar_width + 34
+    svg_height = next_origin_y
 
     title = midi_title(source, timed)
     subtitle = (
         f"CH10 Drum Piano Roll · {slot_map.name} "
         f"(SLOT_MAP_ID={slot_map.slot_map_id}) · PPQN {mid.ticks_per_beat} · "
         f"{VERSION_TEXT}"
+        + (" · fixed rows" if show_all_notes else " · compact rows")
     )
 
     svg: List[str] = []
@@ -708,12 +737,16 @@ def write_drum_roll_html(
     for note in drum_notes:
         drum_by_start[note.start_tick].append(note)
 
-    for system_index, system_bars in enumerate(rows):
-        origin_y = 76 + system_index * (system_height + system_gap)
+    for system_index, layout in enumerate(system_layouts):
+        system_bars = layout["bars"]
+        note_order = layout["notes"]
+        origin_y = layout["origin_y"]
+        plot_height = layout["plot_height"]
         plot_top = origin_y + header_height
         plot_left = label_width
         actual_bars = len(system_bars)
         plot_width = actual_bars * bar_width
+        note_index = {note: index for index, note in enumerate(note_order)}
 
         first_measure = system_bars[0][0]
         last_measure = system_bars[-1][0]
@@ -773,8 +806,10 @@ def write_drum_roll_html(
                 x = x0 + relative * bar_width
                 actual_width = note.duration / duration * bar_width
                 x2 = min(x0 + bar_width, max(x + 1.5, x + actual_width))
-                y = plot_top + note_order.index(note.note) * row_height + row_height / 2
-                radius = 2.4 + 2.4 * note.velocity / 127
+                if note.note not in note_index:
+                    continue
+                y = plot_top + note_index[note.note] * row_height + row_height / 2
+                radius = 2.0 + 2.0 * note.velocity / 127
                 instrument = GM_DRUM_NAMES.get(
                     note.note,
                     "Unknown / non-GM drum note",
@@ -1063,6 +1098,7 @@ def inspect_file(path: Path, args: argparse.Namespace) -> int:
                 ts_map,
                 slot_maps,
                 args.bars_per_row,
+                args.show_all_notes,
                 args.output_dir,
             )
             print(f"\n[WROTE] {target}")
@@ -1122,6 +1158,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         help="number of measures per drum-roll system (default: 4; A4 portrait)",
+    )
+    parser.add_argument(
+        "--show-all-notes",
+        action="store_true",
+        help=(
+            "use the same file-wide instrument rows in every drum-roll system; "
+            "default compact mode hides rows without events in each system"
+        ),
     )
     parser.add_argument(
         "--slot-maps",
