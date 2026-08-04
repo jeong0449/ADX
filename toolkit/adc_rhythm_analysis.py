@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adc_rhythm_analysis.py 260801b
+"""adc_rhythm_analysis.py 260804c
 
 Shared grace/flam/ghost and straight/8T/16T subdivision analysis for ADC Toolkit.
 Used by adc-patternlab.py and adc-mid2report.py.
@@ -19,7 +19,7 @@ from typing import Any, Iterable
 from mido import Message, MidiFile
 
 SCRIPT_NAME = "adc_rhythm_analysis.py"
-VERSION = "260801b"
+VERSION = "260804c"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 ADT_DRUM_FAMILIES = {
@@ -202,6 +202,58 @@ def duration_subdivision_evidence(events: Iterable[Any], tpq: int) -> dict:
     return {"scores": scores, "samples": len(usable)}
 
 
+
+def onset_grid_fit(note_ticks: Iterable[int], tpq: int) -> dict:
+    """Measure onset fit for straight-16, 8T, and 16T candidate grids.
+
+    The calculation uses unique note-on positions so simultaneous drum hits do
+    not overweight one phase.  A position is considered aligned when it lies
+    within 5% of one candidate grid step from the nearest grid line.
+    """
+    if tpq <= 0:
+        tpq = 1
+    ticks = sorted(set(int(tick) for tick in note_ticks))
+    candidates = {
+        "straight-16": 4,
+        "triplet-8T": 3,
+        "triplet-16T": 6,
+    }
+    stats = {}
+    for kind, cells_per_beat in candidates.items():
+        step = tpq / cells_per_beat
+        tolerance = max(1.0, step * 0.05)
+        errors = []
+        normalized = []
+        aligned = 0
+        for tick in ticks:
+            phase = tick % tpq
+            nearest = round(phase / step) * step
+            error = min(abs(phase - nearest), abs(tpq - abs(phase - nearest)))
+            errors.append(error)
+            normalized.append(error / step)
+            if error <= tolerance:
+                aligned += 1
+        count = len(ticks)
+        stats[kind] = {
+            "count": count,
+            "aligned": aligned,
+            "aligned_ratio": aligned / count if count else 0.0,
+            "mean_error_ticks": sum(errors) / count if count else 0.0,
+            "mean_error_ratio": sum(normalized) / count if count else 0.0,
+            "step_ticks": step,
+            "tolerance_ticks": tolerance,
+        }
+    return stats
+
+
+def _grid_fit_score(stat: dict) -> float:
+    """Convert grid-fit statistics to bounded positive evidence."""
+    aligned = float(stat.get("aligned_ratio", 0.0))
+    mean_error = float(stat.get("mean_error_ratio", 1.0))
+    closeness = max(0.0, 1.0 - min(1.0, mean_error / 0.25))
+    return 0.34 * aligned + 0.10 * closeness
+
+
 def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
                                  filename: str = "") -> dict:
     """Combine onset phase, duration, and filename evidence in one shared engine."""
@@ -209,9 +261,14 @@ def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
     scores = {"straight-16": 0.0, "triplet-8T": 0.0, "triplet-16T": 0.0}
     details = base.get("details", {})
     evidence = max(1, details.get("samples", 0))
-    scores["straight-16"] += 0.70 * details.get("straight_hits", 0) / evidence
-    scores["triplet-8T"] += 0.70 * details.get("triplet_8t_hits", 0) / evidence
-    scores["triplet-16T"] += 0.70 * details.get("triplet_16t_only_hits", 0) / evidence
+    scores["straight-16"] += 0.56 * details.get("straight_hits", 0) / evidence
+    scores["triplet-8T"] += 0.56 * details.get("triplet_8t_hits", 0) / evidence
+    scores["triplet-16T"] += 0.56 * details.get("triplet_16t_only_hits", 0) / evidence
+
+    note_ticks = [int(_get(event, "tick", 0)) for event in events]
+    grid_fit = onset_grid_fit(note_ticks, tpq)
+    for kind in scores:
+        scores[kind] += _grid_fit_score(grid_fit[kind])
 
     # A straight-8 pattern may contain only beat anchors and half-beats, leaving
     # no exclusive 1/4 or 3/4 phase evidence.  Half-beat repetition is still
@@ -229,10 +286,25 @@ def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
 
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     winner, top = ranked[0]
-    runner = ranked[1][1]
-    if top < 0.20:
+    runner_kind, runner = ranked[1]
+
+    # 16T is accepted only when both exclusive phases (1/6 and 5/6 beat) are
+    # actually represented.  This prevents the finer 16T grid from winning
+    # merely because it also contains every 8T grid line.
+    t16_phase = details.get("16T_phase", [0, 0])
+    strong_16t_identity = (
+        details.get("triplet_16t_only_hits", 0) >= 4
+        and len(t16_phase) >= 2
+        and max(t16_phase) >= 3
+    )
+    if winner == "triplet-16T" and not strong_16t_identity:
+        eligible = [(kind, value) for kind, value in ranked if kind != "triplet-16T"]
+        winner, top = eligible[0]
+        runner = eligible[1][1]
+
+    if top < 0.28:
         final = "unknown"
-    elif top - runner < 0.08:
+    elif top - runner < 0.07:
         final = "mixed"
     else:
         final = winner
@@ -244,6 +316,16 @@ def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
     out["rhythmic_feel"] = "straight" if final == "straight-16" else "shuffle/swing" if final.startswith("triplet-") else final
     out["confidence"] = round((top - runner) / max(0.001, top + runner), 3)
     out["combined_scores"] = {kind: round(value, 3) for kind, value in scores.items()}
+    out["grid_fit"] = {
+        kind: {
+            "aligned_ratio": round(stat["aligned_ratio"], 3),
+            "aligned_percent": round(100.0 * stat["aligned_ratio"], 1),
+            "mean_error_ticks": round(stat["mean_error_ticks"], 3),
+            "mean_error_ratio": round(stat["mean_error_ratio"], 4),
+        }
+        for kind, stat in grid_fit.items()
+    }
+    out["strong_16t_identity"] = strong_16t_identity
     out["duration_samples"] = duration["samples"]
     out["filename_hints"] = hint["reasons"]
     out["phase_subdivision"] = base.get("subdivision", "unknown")
