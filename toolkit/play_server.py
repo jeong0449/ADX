@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 """Local PatternLab playback service using FluidSynth and an SF2 SoundFont.
 
-Version: 260804a
+Version: 260804c
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -18,8 +21,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+try:
+    from mido import MidiFile
+except ImportError:
+    MidiFile = None
+
 SCRIPT_NAME = "play_server.py"
-VERSION = "260804a"
+VERSION = "260804c"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 HOST = "127.0.0.1"
@@ -99,8 +107,104 @@ class PlayerState:
             daemon=True,
         ).start()
 
+    def play_path(self, midi_path: Path) -> None:
+        self.stop()
+        command = [
+            str(self.fluidsynth),
+            "-a", self.audio_driver,
+            "-ni",
+            str(self.soundfont),
+            str(midi_path),
+        ]
+        process = subprocess.Popen(command)
+        with self.lock:
+            self.process = process
+            self.temp_midi = None
 
-def make_handler(player: PlayerState, directory: Path):
+        def clear_after_exit() -> None:
+            process.wait()
+            with self.lock:
+                if self.process is process:
+                    self.process = None
+
+        threading.Thread(target=clear_after_exit, daemon=True).start()
+
+
+def midi_duration_seconds(path: Path) -> float | None:
+    if MidiFile is None:
+        return None
+    try:
+        return max(0.0, float(MidiFile(path).length))
+    except Exception:
+        return None
+
+
+class MidiLibrary:
+    """Expose only approved MIDI metadata and opaque per-server IDs."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory.resolve()
+        self.secret = secrets.token_bytes(32)
+        self.lock = threading.RLock()
+        self.by_id: dict[str, Path] = {}
+
+    def _opaque_id(self, path: Path) -> str:
+        # The browser never receives the filesystem path. The random per-run
+        # secret also prevents a filename from being guessed from its ID.
+        stat = path.stat()
+        material = f"{path.name}\0{stat.st_size}\0{stat.st_mtime_ns}".encode("utf-8", "surrogatepass")
+        digest = hashlib.blake2s(material, key=self.secret, digest_size=12).hexdigest()
+        return f"midi-{digest}"
+
+    def refresh(self) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        mapping: dict[str, Path] = {}
+        for path in sorted(self.directory.iterdir(), key=lambda p: p.name.casefold()):
+            # First version deliberately exposes only regular, non-symlink MIDI
+            # files located directly in the configured directory.
+            if path.is_symlink() or not path.is_file() or path.suffix.lower() not in {".mid", ".midi"}:
+                continue
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(self.directory)
+            except ValueError:
+                continue
+            file_id = self._opaque_id(resolved)
+            mapping[file_id] = resolved
+            stat = resolved.stat()
+            rows.append({
+                "id": file_id,
+                "name": resolved.name,
+                "size": stat.st_size,
+                "duration_seconds": midi_duration_seconds(resolved),
+            })
+        with self.lock:
+            self.by_id = mapping
+        return rows
+
+    def resolve(self, file_id: str) -> Path:
+        if not isinstance(file_id, str) or not file_id.startswith("midi-"):
+            raise ValueError("invalid MIDI file ID")
+        with self.lock:
+            path = self.by_id.get(file_id)
+        if path is None:
+            # Refresh once so files added after server startup can be played.
+            self.refresh()
+            with self.lock:
+                path = self.by_id.get(file_id)
+        if path is None:
+            raise ValueError("unknown or expired MIDI file ID")
+        if path.is_symlink() or not path.is_file() or path.suffix.lower() not in {".mid", ".midi"}:
+            raise ValueError("MIDI file is no longer available")
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(self.directory)
+        except ValueError as exc:
+            raise ValueError("MIDI file is outside the allowed directory") from exc
+        return resolved
+
+
+def make_handler(player: PlayerState, directory: Path, library: MidiLibrary):
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(directory), **kwargs)
@@ -114,11 +218,68 @@ def make_handler(player: PlayerState, directory: Path):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_json(self, status: int, value: object) -> None:
+            body = json.dumps(value, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def list_directory(self, path):
+            # SimpleHTTPRequestHandler normally exposes a directory index.
+            # PatternLab never needs that capability.
+            self.send_error(403, "Directory listing is disabled")
+            return None
+
+        def send_head(self):
+            # The generated report is self-contained. Serve HTML only; do not
+            # turn the playback service into a general local-file web server.
+            request_path = urlparse(self.path).path
+            if request_path.endswith("/"):
+                return self.list_directory(str(directory))
+            suffix = Path(request_path).suffix.lower()
+            if suffix not in {".html", ".htm"}:
+                self.send_error(403, "Only PatternLab HTML reports are served")
+                return None
+            return super().send_head()
+
+        def do_GET(self) -> None:
+            path = urlparse(self.path).path
+            if path == "/api/midi-files":
+                self._send_json(200, {"files": library.refresh()})
+                return
+            super().do_GET()
+
         def do_POST(self) -> None:
             path = urlparse(self.path).path
             if path == "/stop":
                 player.stop()
                 self._send_text(200, "Stopped")
+                return
+
+            if path == "/play-file":
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 1 <= length <= 65536:
+                        raise ValueError("invalid request size")
+                    payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                    file_id = payload.get("id") if isinstance(payload, dict) else None
+                    if not isinstance(file_id, str) or not file_id:
+                        raise ValueError("missing MIDI file ID")
+                    midi_path = library.resolve(file_id)
+                    player.play_path(midi_path)
+                    self._send_json(200, {
+                        "status": "playing",
+                        "id": file_id,
+                        "name": midi_path.name,
+                        "duration_seconds": midi_duration_seconds(midi_path),
+                    })
+                except (ValueError, json.JSONDecodeError) as exc:
+                    self._send_json(400, {"error": str(exc)})
+                except Exception as exc:
+                    self._send_json(500, {"error": f"Playback failed: {exc}"})
                 return
 
             if path != "/play":
@@ -234,7 +395,9 @@ def main() -> int:
         parser.error("--port must be 1..65535")
 
     player = PlayerState(fluidsynth, soundfont, args.audio_driver)
-    handler = make_handler(player, directory)
+    library = MidiLibrary(directory)
+    library.refresh()
+    handler = make_handler(player, directory, library)
     server = ThreadingHTTPServer((HOST, args.port), handler)
     base_url = f"http://{HOST}:{args.port}/"
     open_url = base_url
