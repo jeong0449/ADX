@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adx-player-win 260804c — Windows FluidSynth CLI player for ADX and MIDI files.
+"""adx-player-win 260805a — Windows FluidSynth CLI player for ADX and MIDI files.
 
 Supports:
 - ADT v2.3 text patterns
@@ -34,7 +34,7 @@ except ImportError:
     mido = None
 
 SCRIPT_NAME = "adx-player-win.py"
-VERSION = "260804c"
+VERSION = "260805a"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 ADT_VERSION_LINE = "; ADT v2.3"
@@ -86,6 +86,7 @@ class Pattern:
     time_sig: Optional[str] = None
     tempo: Optional[int] = None
     ppqn: int = DEFAULT_PPQN
+    legacy_ppqn: Optional[int] = None
 
 
 def crc16_ccitt(data: bytes, poly: int = 0x1021, init: int = 0xFFFF) -> int:
@@ -396,8 +397,9 @@ def load_adp2(path: Path, data: bytes, by_name: Dict[str, SlotMapDefinition]) ->
     payload = data[ADP2_HEADER_SIZE:ADP2_HEADER_SIZE + payload_bytes]
     if len(payload) != payload_bytes or ADP2_HEADER_SIZE + payload_bytes != len(data):
         raise ValueError("ADP2 payload length mismatch")
+    legacy_ppqn = None
     if ppqn == 96:
-        print(f"Warning: {path.name} uses legacy PPQN=96; normalized to 240.", file=sys.stderr)
+        legacy_ppqn = 96
         ppqn = DEFAULT_PPQN
     elif ppqn != DEFAULT_PPQN:
         raise ValueError(f"Unsupported ADP2 PPQN: {ppqn}")
@@ -410,6 +412,7 @@ def load_adp2(path: Path, data: bytes, by_name: Dict[str, SlotMapDefinition]) ->
         slot_full_names=[slot.extended for slot in selected_slots],
         slot_map_name=DEFAULT_SLOT_MAP,
         time_sig=None, tempo=tempo or None, ppqn=ppqn,
+        legacy_ppqn=legacy_ppqn,
     )
 
 
@@ -668,6 +671,7 @@ def run_fluidsynth(
     loop_count: Optional[int],
     gain: Optional[float],
     quiet: bool,
+    verbose: bool,
 ) -> int:
     """Run FluidSynth and configure player looping through its live shell.
 
@@ -684,7 +688,13 @@ def run_fluidsynth(
     # Do not use -i here: the shell must remain available so player_loop can
     # be issued after the command-line MIDI player has been created.
     command.extend([str(soundfont), str(midi_path)])
-    print("Command  :", subprocess.list2cmdline(command))
+    if verbose:
+        print(f"Temp MIDI   : {midi_path}")
+        print("Command     :", subprocess.list2cmdline(command))
+
+    print()
+    print("Ready.")
+    print("Playing...")
 
     process: subprocess.Popen[str] | None = None
     try:
@@ -822,16 +832,21 @@ def print_ascii_pattern(pattern: Pattern, show_all_slots: bool = False) -> None:
 
 def print_pattern_info(pattern: Pattern, bpm: float, repeat_text: str,
                        ornament: Optional[OrnamentSidecar]) -> None:
-    print(f"File     : {pattern.name}")
-    print(f"Format   : {pattern.source_format}")
-    print(f"Meter    : {pattern.time_sig or 'not stored'}")
-    print(f"SUBDIV   : {pattern.grid_type}")
-    print(f"Length   : {pattern.length} steps")
-    print(f"Slot map : {pattern.slot_map_name} ({pattern.slots} slots)")
-    print(f"Tempo    : {bpm:g} BPM")
-    print(f"PPQN     : {pattern.ppqn}")
-    print(f"ORN      : {ornament.path.name if ornament else 'none'}")
-    print(f"Repeat   : {repeat_text}")
+    display_format = pattern.source_format
+    if pattern.source_format == "ADP v2.2":
+        display_format += " (legacy)"
+
+    print("=" * 61)
+    print(f"ADX Player Win {VERSION}")
+    print("=" * 61)
+    print()
+    print(f"File      : {pattern.name}")
+    print(f"Format    : {display_format}")
+    print(f"Subdiv    : {pattern.grid_type}")
+    print(f"Length    : {pattern.length} steps")
+    print(f"Tempo     : {bpm:g} BPM")
+    print(f"Repeat    : {repeat_text}")
+    print(f"ORN       : {ornament.path.name if ornament else 'none'}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -860,6 +875,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--quiet", action="store_true", help="pass -q to FluidSynth")
     parser.add_argument("--show-all-slots", action="store_true",
                         help="show empty slots too; default display omits rows with no events")
+    parser.add_argument("--verbose", action="store_true",
+                        help="show full paths, temporary MIDI path, and FluidSynth command")
     parser.add_argument("--validate", action="store_true", help="validate input without playback")
     parser.add_argument("--export-midi", type=Path,
                         help="write rendered ADT/ADP/ORN as a Standard MIDI File")
@@ -917,8 +934,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print_pattern_info(pattern, bpm, repeat_text, ornament)
             print_ascii_pattern(pattern, show_all_slots=args.show_all_slots)
             print()
-            print(f"Slot JSON: {slot_map_path}")
-            print(f"Accent JSON: {accent_path}")
+            if args.verbose:
+                print(f"Slot JSON   : {slot_map_path}")
+                print(f"Accent JSON : {accent_path}")
+                if pattern.legacy_ppqn is not None:
+                    print(f"Legacy PPQN : {pattern.legacy_ppqn}")
+                    print(f"Normalized  : {pattern.ppqn}")
             rendered = pattern_to_midi(pattern, ornament, bpm, args.note_length, accents)
             if args.export_midi:
                 output = args.export_midi.expanduser().resolve()
@@ -939,12 +960,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         fluidsynth, fs_source = resolve_fluidsynth(args.fluidsynth)
         soundfont, sf_source = resolve_soundfont(args.sf2)
-        print(f"FluidSynth: {fluidsynth} ({fs_source})")
-        print(f"SoundFont : {soundfont} ({sf_source})")
+        if args.verbose:
+            print(f"FluidSynth  : {fluidsynth} ({fs_source})")
+            print(f"SoundFont   : {soundfont} ({sf_source})")
+        else:
+            print(f"FluidSynth : {fs_source}")
+            print(f"SoundFont  : {soundfont.name}")
         # player_loop counts additional loops: 0 = once, -1 = infinite.
         loop_count = -1 if args.loop else max(0, args.count - 1)
         return run_fluidsynth(fluidsynth, soundfont, args.audio_driver, midi_path,
-                              loop_count, args.gain, args.quiet)
+                              loop_count, args.gain, args.quiet, args.verbose)
     except (ValueError, RuntimeError, OSError, struct.error, json.JSONDecodeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
