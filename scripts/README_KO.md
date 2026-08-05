@@ -77,6 +77,8 @@ python .\adc-mid2report.py .\song.mid
 
 ## 3. PatternLab 실행
 
+## 3. PatternLab 실행
+
 ```powershell
 python .\adc-patternlab.py .\song.mid
 ```
@@ -91,6 +93,19 @@ Pattern별로 다음 항목을 검토합니다.
 - ORN
 
 검토가 끝나면 CSV를 저장합니다.
+
+생성된 HTML 리포트를 Pattern 및 MIDI 재생 기능과 함께 열려면 다음과 같이 실행합니다.
+
+```powershell
+python .\play_server.py --report .\song_PatternLab.html
+```
+
+웹 브라우저가 자동으로 열리며 다음 기능을 사용할 수 있습니다.
+
+- Pattern 재생
+- MIDI 파일 재생
+- Pattern 비교 청취
+- FluidSynth 기반 SoundFont 재생
 
 ---
 
