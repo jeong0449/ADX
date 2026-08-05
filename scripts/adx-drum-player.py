@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adx-player 260802b — ADT/ADP reference playback CLI for Raspberry Pi.
+"""adx-drum-player 260802b — ADT/ADP reference playback CLI for Raspberry Pi.
 
 Supports:
 - ADT v2.3 text patterns
@@ -30,7 +30,7 @@ try:
 except ImportError:  # handled cleanly in main
     mido = None
 
-SCRIPT_NAME = "adx-player.py"
+SCRIPT_NAME = "adx-drum-player.py"
 VERSION = "260802b"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
