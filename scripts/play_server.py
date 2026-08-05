@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Local PatternLab playback service using FluidSynth and an SF2 SoundFont.
 
-Version: 260805b
+Version: 260805c
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ except ImportError:
     MidiFile = None
 
 SCRIPT_NAME = "play_server.py"
-VERSION = "260805b"
+VERSION = "260805c"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 HOST = "127.0.0.1"
@@ -406,7 +406,8 @@ def main() -> int:
         epilog=(
             "Examples:\n"
             "  python play_server.py --report COOL_PatternLab.html\n"
-            "  python play_server.py --directory reports --report COOL_PatternLab.html"
+            "  python play_server.py --report .\\reports\\COOL_PatternLab.html\n"
+            "  python play_server.py --report E:\\Hobbies\\ADX\\reports\\COOL_PatternLab.html"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -430,9 +431,12 @@ def main() -> int:
         default=None,
         help=f"override SoundFont path; default: {DEFAULT_SOUNDFONT}",
     )
-    parser.add_argument("--directory", type=Path, default=Path.cwd(), help="folder containing PatternLab HTML reports")
-    parser.add_argument("--report", metavar="HTML", required=True,
-                        help="PatternLab HTML report to open automatically")
+    parser.add_argument(
+        "--report",
+        metavar="HTML",
+        required=True,
+        help="PatternLab HTML report path (relative or absolute)",
+    )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--audio-driver", default="dsound", help="FluidSynth audio driver (default: dsound)")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser automatically")
@@ -441,46 +445,27 @@ def main() -> int:
     fluidsynth, fluidsynth_source = resolve_fluidsynth(args.fluidsynth, parser)
     soundfont, soundfont_source = resolve_soundfont(args.sf2, parser)
 
-    directory = args.directory.expanduser().resolve()
-    if not directory.is_dir():
-        parser.error(f"directory not found: {directory}")
+    report_path = Path(args.report).expanduser().resolve()
+    if not report_path.is_file():
+        parser.error(f"report not found: {report_path}")
+    if report_path.suffix.lower() not in {".html", ".htm"}:
+        parser.error(f"--report must be an HTML file: {report_path}")
     if not 1 <= args.port <= 65535:
         parser.error("--port must be 1..65535")
+
+    directory = report_path.parent
+    relative_report = Path(report_path.name)
 
     player = PlayerState(fluidsynth, soundfont, args.audio_driver)
     library = MidiLibrary(directory)
     library.refresh()
-    handler = make_handler(player, directory, library, report_selected=bool(args.report))
+    handler = make_handler(player, directory, library, report_selected=True)
     server = ThreadingHTTPServer((HOST, args.port), handler)
     base_url = f"http://{HOST}:{args.port}/"
-    open_url = base_url
-    if args.report:
-        # Accept Windows-style forms such as:
-        #   ALLSTARS_PatternLab.html
-        #   .\ALLSTARS_PatternLab.html
-        #   reports\ALLSTARS_PatternLab.html
-        #
-        # Resolve the filesystem path first, then derive a clean URL path
-        # relative to the served directory. This prevents ".\" from being
-        # copied literally into the browser URL.
-        raw_report = str(args.report).strip()
-        normalized_report = raw_report.replace("\\", "/")
-        while normalized_report.startswith("./"):
-            normalized_report = normalized_report[2:]
-        normalized_report = normalized_report.lstrip("/")
 
-        report_path = (directory / Path(normalized_report)).resolve()
-        try:
-            relative_report = report_path.relative_to(directory)
-        except ValueError:
-            parser.error(f"--report must be inside --directory: {report_path}")
-
-        if not report_path.is_file():
-            parser.error(f"report not found in --directory: {report_path}")
-
-        from urllib.parse import quote
-        report_url_path = quote(relative_report.as_posix(), safe="/")
-        open_url = base_url + report_url_path
+    from urllib.parse import quote
+    report_url_path = quote(relative_report.as_posix(), safe="/")
+    open_url = base_url + report_url_path
 
     print(f"PatternLab FluidSynth service ({VERSION_TEXT})")
     print(f"  URL        : {base_url}")
@@ -488,11 +473,6 @@ def main() -> int:
     print(f"  FluidSynth : {fluidsynth} ({fluidsynth_source})")
     print(f"  SoundFont  : {soundfont} ({soundfont_source})")
     print("  Stop server: Ctrl+C")
-    if not args.report:
-        print()
-        print("No report specified.")
-        print("Example:")
-        print("  python play_server.py --report COOL_PatternLab.html")
 
     if not args.no_browser:
         webbrowser.open(open_url)
