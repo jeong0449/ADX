@@ -68,3 +68,22 @@ The ADX Platform consists of four major components:
 - **Pattern Library** – A collection of reusable and exchangeable drum patterns derived from Standard MIDI files.
 
 Together, these components provide a complete workflow from **performance MIDI** to **portable drum patterns**.
+
+---
+
+## Acknowledgements
+
+The development of **ADX Drum** owes much to the pioneering work of **René-Pierre Bardet**, whose classic books
+
+- *200 Drum Machine Patterns*
+- *260 Drum Machine Patterns*
+
+have inspired generations of drummers, musicians, and MIDI enthusiasts.
+
+The widely circulated GM MIDI transcriptions of these pattern collections have served as an invaluable reference dataset throughout the development of ADX Drum. They made it possible to study, analyze, validate, and refine the pattern abstraction methods implemented in this project.
+
+The original books remain valuable references and can still be found through various online archival resources. The GM MIDI transcriptions used during the development of ADX Drum were obtained from community resources, including:
+
+- https://discuss.cakewalk.com/topic/648-460-free-gm-midi-drum-patterns/
+
+ADX Drum builds upon this legacy by transforming Standard MIDI drum performances into reusable, exchangeable, and playable drum patterns for modern software and embedded systems.
