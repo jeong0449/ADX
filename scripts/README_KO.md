@@ -1,6 +1,6 @@
 # ADC Toolkit
 
-ADC Toolkit은 **ADX(Advanced Drum eXchange)** 생태계의 핵심 구성 요소입니다.
+ADC Toolkit은 **ADX** 드럼 패턴 생태계의 핵심 구성 요소입니다.
 
 Standard MIDI File(SMF)의 드럼 연주를 분석하여 재사용 가능한 드럼 패턴(ADX = ADT/ADX Pattern)으로 변환하기 위한 도구 모음입니다.
 
