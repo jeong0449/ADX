@@ -1,23 +1,24 @@
-# The ADX Platform for Drum Patternology
+# ADX Drum
+## An Open Platform for Drum Patternology
 
 **Analyze • Abstract • Exchange • Play**
 
-The ADX Platform is an open software ecosystem for analyzing, abstracting, exchanging, and playing reusable drum patterns based on Standard MIDI drum performances.
+ADX Drum is an open software ecosystem for analyzing, abstracting, exchanging, and playing reusable drum patterns derived from Standard MIDI drum performances.
 
 ---
 
 ## Why ADX?
 
-The **ADX** platform evolved from the **ADT/ADP** drum pattern format family.
+**ADX Drum** evolved from the **ADT/ADP** family drum pattern formats.
 
 - **ADT** (*Ardule Drum Text*) is the human-readable drum pattern format.
-- **ADP** (*Ardule Drum Pattern*) is the compact binary cache format generated from ADT for efficient storage and playback.
+- **ADP** (*Ardule Drum Pattern*) is the compact binary-cache format generated from ADT for efficient storage and playback.
 
 The name **ADX** originally referred to the ADT/ADP format family. As the project evolved beyond file formats into a complete software ecosystem—including MIDI analysis, pattern abstraction, format conversion, playback, and a pattern library—**ADX** naturally became the umbrella name for the platform.
 
-The letter **X** is intentionally open-ended. It evokes concepts such as **eXchange**, **eXtended**, and future **eXpansion**, reflecting the evolution of the platform beyond individual file formats.
+The letter **X** is intentionally open-ended. It evokes concepts such as **eXchange**, **eXtended**, and future **expansion**, reflecting the evolution of the platform beyond individual file formats.
 
-Today, **The ADX Platform for Drum Patternology** has evolved into an integrated software ecosystem for **analyzing, abstracting, exchanging, and playing** drum patterns.
+Today, **ADX Drum** provides an integrated workflow for **analyzing, abstracting, exchanging, and playing** drum patterns.
 
 ---
 
@@ -25,11 +26,11 @@ Today, **The ADX Platform for Drum Patternology** has evolved into an integrated
 
 With the introduction of the ADT/ADP v2.3 specifications, the project has been reorganized into two independent repositories.
 
-- [Nano Ardule](https://github.com/jeong0449/NanoArdule) remains focused on the hardware and firmware implementation for Arduino Nano– and Raspberry Pi–based embedded MIDI playback.
+- [Nano Ardule](https://github.com/jeong0449/NanoArdule) remains focused on the hardware and firmware implementation for Arduino Nano- and Raspberry Pi-based embedded MIDI playback.
 
-- **ADX** is a new standalone software project dedicated to the analysis and preprocessing of Standard MIDI drum files, drum pattern abstraction, ADT/ADP/ORN generation, pattern exchange, lightweight playback utilities, and the drum pattern library.
+- **ADX Drum** is a new standalone software project dedicated to Standard MIDI drum analysis, drum pattern abstraction, ADT/ADP/ORN generation, pattern exchange, lightweight playback tools, and the drum pattern library.
 
-This separation clearly distinguishes the embedded playback platform (**Nano Ardule**) from the software ecosystem (**The ADX Platform for Drum Patternology**), allowing both projects to evolve independently while sharing the same design philosophy.
+This separation clearly distinguishes the embedded playback platform from the software ecosystem, allowing both projects to evolve independently while sharing the same design philosophy.
 
 ---
 
