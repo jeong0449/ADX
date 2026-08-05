@@ -102,8 +102,6 @@ python .\adc-mid2report.py .\song.mid
 
 ## 3. PatternLab 실행
 
-## 3. PatternLab 실행
-
 ```powershell
 python .\adc-patternlab.py .\song.mid
 ```
