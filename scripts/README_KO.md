@@ -59,6 +59,31 @@ pip install -r requirements.txt
 >
 > Ghostscript는 **PDF 생성에만 필요**하며, 일반적인 MIDI 분석 및 패턴 분할 기능에는 필요하지 않습니다.
 
+### Windows에서 패턴 재생하기
+
+Windows에서 `play_server.py`, `adx-player-win.py`, 또는 `adx-web-editor.py`를 사용하여 ADT/ADP/MIDI 파일을 재생하려면 다음 프로그램이 필요합니다.
+
+- **FluidSynth 2.x**
+- **General MIDI SoundFont (.sf2)** (예: GeneralUser GS, FluidR3 GM)
+
+기본적으로 다음 위치를 사용합니다.
+
+```text
+C:\Tools\FluidSynth\bin\fluidsynth.exe
+C:\SoundFonts\GeneralUser-GS.sf2
+```
+
+다른 위치에 설치한 경우에는 명령행 옵션으로 지정할 수 있습니다.
+
+```powershell
+python .\adx-player-win.py pattern.adt ^
+    --fluidsynth "D:\Tools\FluidSynth\bin\fluidsynth.exe" ^
+    --sf2 "D:\SoundFonts\GeneralUser-GS.sf2"
+```
+
+> [!NOTE]
+> FluidSynth와 SoundFont는 **패턴 재생 기능에만 필요**합니다. MIDI 분석, PatternLab 리포트 생성, MIDI Inspector 등 대부분의 ADC Toolkit 기능은 별도의 음원 없이 사용할 수 있습니다.
+
 ## 1. 입력 MIDI 검사
 
 ```powershell
