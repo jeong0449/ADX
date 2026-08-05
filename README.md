@@ -80,6 +80,8 @@ The development of **ADX Drum** owes much to the pioneering work of **René-Pier
 
 have inspired generations of drummers, musicians, and MIDI enthusiasts.
 
+Additional reference patterns were obtained from the **27 Instant Rap Patterns** collection (original compiler/author unknown).
+
 The widely circulated GM MIDI transcriptions of these pattern collections have served as an invaluable reference dataset throughout the development of ADX Drum. They made it possible to study, analyze, validate, and refine the pattern abstraction methods implemented in this project.
 
 The original books remain valuable references and can still be found through various online archival resources. The GM MIDI transcriptions used during the development of ADX Drum were obtained from community resources, including:
