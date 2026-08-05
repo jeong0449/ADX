@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adx-player-win 260805a — Windows FluidSynth CLI player for ADX and MIDI files.
+"""adx-drum-player-win 260805a — Windows FluidSynth CLI player for ADX and MIDI files.
 
 Supports:
 - ADT v2.3 text patterns
@@ -33,7 +33,7 @@ try:
 except ImportError:
     mido = None
 
-SCRIPT_NAME = "adx-player-win.py"
+SCRIPT_NAME = "adx-drum-player-win.py"
 VERSION = "260805a"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
