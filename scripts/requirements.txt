@@ -1,0 +1,7 @@
+# ADX Toolkit
+mido>=1.3.2
+pretty_midi>=0.2.10
+numpy>=1.26
+pandas>=2.2
+matplotlib>=3.9
+svgwrite>=1.4.3
