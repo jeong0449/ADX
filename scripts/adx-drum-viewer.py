@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adx-viewer.py 260802a
+"""adx-drum-viewer.py 260802a
 
 Render ADT/ADP patterns and optional same-basename ORN sidecars as one
 self-contained interactive HTML/SVG catalog.
@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-SCRIPT_NAME = "adx-viewer.py"
+SCRIPT_NAME = "adx-drum-viewer.py"
 VERSION = "260802d"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 ADT_VERSION_LINE = "; ADT v2.3"
