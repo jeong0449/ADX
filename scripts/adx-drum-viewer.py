@@ -37,16 +37,16 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 SCRIPT_NAME = "adx-drum-viewer.py"
-VERSION = "260807f"
+VERSION = "260807g"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 ADT_VERSION_LINE = "; ADT v2.3"
 DEFAULT_SLOT_MAP = "LEGACY"
 DEFAULT_ORIENTATION = "STEP"
 DEFAULT_PPQN = 240
 INLINE_SLOT_MAP_ID = 255
-SUBDIV_CODE_TO_STR = {0: "16", 1: "8T", 2: "16T"}
+SUBDIV_CODE_TO_STR = {0: "16", 1: "8T", 2: "16T", 3: "32"}
 VALID_SUBDIV = set(SUBDIV_CODE_TO_STR.values())
-STEPS_PER_QUARTER = {"16": 4, "8T": 3, "16T": 6}
+STEPS_PER_QUARTER = {"16": 4, "8T": 3, "16T": 6, "32": 8}
 BODY_OK = {".", "-", "x", "X", "o", "O", "^", "@"}
 SLOT_KEY_RE = re.compile(r"^SLOT([0-9]+)$")
 NAME_RE = re.compile(r"^[A-Z0-9]{3}_[0-9]{4}$")
@@ -727,6 +727,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     output.write_text(render_html(patterns, title, accent_levels), encoding="utf-8")
     print(VERSION_TEXT); print(f"[DONE] output={output}")
     print(f"[DONE] accent_levels={accent_levels_path} ({args.accent_scheme})")
+    print(f"[DONE] processed={len(patterns)} pattern(s)")
     print(f"[DONE] rendered={len(patterns)}, skipped={skipped}")
     return 0 if skipped == 0 else 1
 
