@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adc-adt2adp.py 260801c
+"""adc-adt2adp.py 260806a
 
 Convert ADT v2.3 drum-pattern text files into ADP v2.3 binary cache files.
 
@@ -12,26 +12,27 @@ Inputs
 ------
 1. ADT v2.3 file(s)
 2. slot_map_definitions.json (default: beside this script)
+3. accent_levels.json (default: beside this script)
 
 ADP v2.3 header (12 bytes, little-endian)
 ------------------------------------------------
 Offset  Size  Field
 0x00    4     Magic: b"ADP3"
 0x04    1     Version: 23
-0x05    1     SUBDIV code: 0=16, 1=8T, 2=16T
+0x05    1     SUBDIV code: 0=16, 1=32, 2=8T, 3=16T
 0x06    1     LENGTH in steps
 0x07    1     SLOT_MAP_ID (0..254 registered, 255=INLINE)
 0x08    2     Payload byte count
 0x0A    2     Payload CRC16-CCITT
 
-Payload encoding is unchanged from ADP v2.2:
+Payload encoding for ADP v2.3 Final:
     for each step:
         u8 hit_count
         hit_count * u8 packed_hit
 
-    packed_hit = (slot_index << 2) | accent
+    packed_hit = (slot_index << 3) | accent
     slot_index: 0..15
-    accent: 1..3 for stored hits (0 is rest and is omitted)
+    accent: 1..5 for stored hits (0 is rest and is omitted)
 
 INLINE policy
 -------------
@@ -57,7 +58,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 SCRIPT_NAME = "adc-adt2adp.py"
-VERSION = "260801c"
+VERSION = "260806a"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 ADT_VERSION_LINE = "; ADT v2.3"
@@ -67,8 +68,8 @@ INLINE_SLOT_MAP_ID = 255
 DEFAULT_SLOT_MAP = "LEGACY"
 DEFAULT_ORIENTATION = "STEP"
 
-SUBDIV_CODE = {"16": 0, "8T": 1, "16T": 2}
-BODY_OK = {".", "-", "x", "X", "o", "O", "^"}
+SUBDIV_CODE = {"16": 0, "32": 1, "8T": 2, "16T": 3}
+BODY_OK: Set[str] = set()
 NAME_RE = re.compile(r"^[A-Z0-9]{3}_[0-9]{4}$")
 SLOT_KEY_RE = re.compile(r"^SLOT([0-9]+)$")
 
@@ -98,7 +99,7 @@ class ParsedADT:
     slot_map_id: int
     orientation: str
     slots: Tuple[SlotDefinition, ...]
-    grid: Tuple[Tuple[int, ...], ...]  # STEP-major, accent levels 0..3
+    grid: Tuple[Tuple[int, ...], ...]  # STEP-major, accent levels 0..5
 
 
 def fail(message: str) -> "NoReturn":
@@ -117,17 +118,60 @@ def crc16_ccitt(data: bytes, poly: int = 0x1021, init: int = 0xFFFF) -> int:
     return crc
 
 
-def accent_from_char(ch: str) -> int:
-    c = ch.lower()
-    if c == ".":
-        return 0
-    if c == "-":
-        return 1
-    if c == "x":
-        return 2
-    if c in {"o", "^"}:
-        return 3
-    raise ValueError(f"invalid ADT data symbol: {ch!r}")
+def load_accent_levels(path: Path) -> Dict[str, int]:
+    """Load the authoritative ADT symbol-to-level map from the 6-accent scheme."""
+    try:
+        raw_root = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        fail(f"accent-level definition not found: {path}")
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read accent-level definition {path}: {exc}")
+
+    schemes = raw_root.get("schemes") if isinstance(raw_root, dict) else None
+    scheme = schemes.get("6-accent") if isinstance(schemes, dict) else None
+    levels = scheme.get("levels") if isinstance(scheme, dict) else None
+    if not isinstance(levels, list) or len(levels) != 6:
+        fail("accent_levels.json must define exactly six levels in schemes['6-accent']['levels']")
+
+    symbol_to_level: Dict[str, int] = {}
+    expected_min = 0
+    for position, level in enumerate(levels):
+        if not isinstance(level, dict):
+            fail(f"6-accent level {position}: must be an object")
+        index = level.get("index")
+        symbol = level.get("symbol")
+        lo = level.get("min_velocity")
+        hi = level.get("max_velocity")
+        rep = level.get("representative_velocity")
+        if index != position:
+            fail(f"6-accent level {position}: index must equal its array position")
+        if not isinstance(symbol, str) or len(symbol) != 1:
+            fail(f"6-accent level {position}: symbol must be one character")
+        if symbol in symbol_to_level:
+            fail(f"6-accent: duplicate symbol {symbol!r}")
+        if not all(isinstance(value, int) for value in (lo, hi, rep)):
+            fail(f"6-accent level {position}: velocity values must be integers")
+        if lo != expected_min or not 0 <= lo <= hi <= 127:
+            fail("6-accent velocity ranges must be contiguous and cover 0..127")
+        if not lo <= rep <= hi:
+            fail(f"6-accent level {position}: representative_velocity must lie within its range")
+        if position == 0 and not (symbol == "." and lo == hi == rep == 0):
+            fail("6-accent level 0 must be Rest with symbol '.' and velocity 0")
+        symbol_to_level[symbol] = index
+        expected_min = hi + 1
+
+    if expected_min != 128:
+        fail("6-accent velocity ranges must end at 127")
+    if set(symbol_to_level.values()) != set(range(6)):
+        fail("6-accent indices must be exactly 0..5")
+    return symbol_to_level
+
+
+def accent_from_char(ch: str, symbol_to_level: Dict[str, int]) -> int:
+    try:
+        return symbol_to_level[ch]
+    except KeyError as exc:
+        raise ValueError(f"invalid ADT data symbol: {ch!r}") from exc
 
 
 def load_slot_maps(path: Path) -> Dict[str, SlotMapDefinition]:
@@ -236,12 +280,13 @@ def parse_inline_slot(value: str, index: int) -> SlotDefinition:
     return SlotDefinition(index, abbrev, extended, note, (note,))
 
 
-def parse_adt(path: Path, slot_maps: Dict[str, SlotMapDefinition]) -> ParsedADT:
+def parse_adt(path: Path, slot_maps: Dict[str, SlotMapDefinition], symbol_to_level: Dict[str, int]) -> ParsedADT:
     try:
         text = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise ValueError(f"cannot read ADT: {exc}") from exc
 
+    body_ok = set(symbol_to_level)
     raw_lines = text.splitlines()
     if not raw_lines:
         raise ValueError("empty ADT file")
@@ -284,7 +329,7 @@ def parse_adt(path: Path, slot_maps: Dict[str, SlotMapDefinition]) -> ParsedADT:
             normalized = "".join(ch for ch in line if not ch.isspace())
             if not normalized:
                 continue
-            invalid = sorted(set(normalized) - BODY_OK)
+            invalid = sorted(set(normalized) - body_ok)
             if invalid:
                 raise ValueError(f"line {line_number}: invalid data symbol(s) {invalid}")
             data_lines.append(normalized)
@@ -300,7 +345,7 @@ def parse_adt(path: Path, slot_maps: Dict[str, SlotMapDefinition]) -> ParsedADT:
 
     subdiv = metadata.get("SUBDIV", "").strip().upper()
     if subdiv not in SUBDIV_CODE:
-        raise ValueError(f"SUBDIV must be one of 16, 8T, 16T, got {subdiv!r}")
+        raise ValueError(f"SUBDIV must be one of 16, 32, 8T, 16T, got {subdiv!r}")
 
     try:
         length = int(metadata.get("LENGTH", ""))
@@ -342,7 +387,7 @@ def parse_adt(path: Path, slot_maps: Dict[str, SlotMapDefinition]) -> ParsedADT:
                 raise ValueError(
                     f"STEP data row {row_index} length must equal slot count {slot_count}, got {len(row)}"
                 )
-        grid = tuple(tuple(accent_from_char(ch) for ch in row) for row in data_lines)
+        grid = tuple(tuple(accent_from_char(ch, symbol_to_level) for ch in row) for row in data_lines)
     else:
         if len(data_lines) != slot_count:
             raise ValueError(f"SLOT data line count must equal slot count {slot_count}, got {len(data_lines)}")
@@ -352,7 +397,7 @@ def parse_adt(path: Path, slot_maps: Dict[str, SlotMapDefinition]) -> ParsedADT:
                     f"SLOT data row {slot_index} length must equal LENGTH={length}, got {len(row)}"
                 )
         grid = tuple(
-            tuple(accent_from_char(data_lines[slot_index][step]) for slot_index in range(slot_count))
+            tuple(accent_from_char(data_lines[slot_index][step], symbol_to_level) for slot_index in range(slot_count))
             for step in range(length)
         )
 
@@ -383,9 +428,12 @@ def encode_payload(parsed: ParsedADT) -> bytes:
                 continue
             if not (0 <= slot_index <= 15):
                 raise ValueError(f"slot index out of packed range: {slot_index}")
-            if not (1 <= accent <= 3):
+            if not (1 <= accent <= 5):
                 raise ValueError(f"accent out of range at step {step_index}, slot {slot_index}: {accent}")
-            hits.append((slot_index << 2) | accent)
+            packed_hit = (slot_index << 3) | accent
+            if packed_hit & 0x80:
+                raise ValueError(f"packed hit sets reserved bit at step {step_index}, slot {slot_index}")
+            hits.append(packed_hit)
 
         if len(hits) > 255:
             raise ValueError(f"too many hits at step {step_index}: {len(hits)}")
@@ -430,12 +478,13 @@ def convert_one(
     input_path: Path,
     output_dir: Path,
     slot_maps: Dict[str, SlotMapDefinition],
+    symbol_to_level: Dict[str, int],
     *,
     overwrite: bool,
     dry_run: bool,
 ) -> Tuple[bool, str]:
     try:
-        parsed = parse_adt(input_path, slot_maps)
+        parsed = parse_adt(input_path, slot_maps, symbol_to_level)
         blob = encode_adp(parsed)
     except (OSError, ValueError, struct.error) as exc:
         return False, f"{input_path.name}: {exc}"
@@ -498,6 +547,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=None,
         help="slot_map_definitions.json (default: beside this script)",
     )
+    parser.add_argument(
+        "--accent-levels",
+        type=Path,
+        default=None,
+        help="accent_levels.json (default: beside this script)",
+    )
     parser.add_argument("--recursive", action="store_true", help="Process ADT files in subdirectories")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing ADP and INLINE companion ADT files")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print the conversion plan without writing files")
@@ -521,6 +576,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     slot_map_path = args.slot_maps or Path(__file__).with_name("slot_map_definitions.json")
     slot_maps = load_slot_maps(slot_map_path)
+    accent_levels_path = args.accent_levels or Path(__file__).with_name("accent_levels.json")
+    symbol_to_level = load_accent_levels(accent_levels_path)
+    global BODY_OK
+    BODY_OK = set(symbol_to_level)
 
     output_dir = resolve_output_dir(input_path, args.out_dir)
     adt_files = list(iter_adt_files(input_path, args.recursive))
@@ -531,6 +590,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"[OK] input      : {input_path}")
     print(f"[OK] output     : {output_dir}")
     print(f"[OK] slot maps  : {slot_map_path}")
+    print(f"[OK] accents    : {accent_levels_path}")
     print(f"[OK] ADT files  : {len(adt_files)}")
 
     success_count = 0
@@ -540,6 +600,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             adt_path,
             output_dir,
             slot_maps,
+            symbol_to_level,
             overwrite=args.overwrite,
             dry_run=args.dry_run,
         )

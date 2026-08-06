@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adx-drum-player-win 260805a — Windows FluidSynth CLI player for ADX and MIDI files.
+"""adx-drum-player-win 260806a — Windows FluidSynth CLI player for ADX and MIDI files.
 
 Supports:
 - ADT v2.3 text patterns
@@ -34,7 +34,7 @@ except ImportError:
     mido = None
 
 SCRIPT_NAME = "adx-drum-player-win.py"
-VERSION = "260805a"
+VERSION = "260806a"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 ADT_VERSION_LINE = "; ADT v2.3"
@@ -43,10 +43,9 @@ DEFAULT_ORIENTATION = "STEP"
 DEFAULT_PPQN = 240
 INLINE_SLOT_MAP_ID = 255
 
-SUBDIV_CODE_TO_STR = {0: "16", 1: "8T", 2: "16T"}
+SUBDIV_CODE_TO_STR = {0: "16", 1: "32", 2: "8T", 3: "16T"}
 VALID_SUBDIV = set(SUBDIV_CODE_TO_STR.values())
-VELOCITY = {0: 0, 1: 40, 2: 80, 3: 120}
-BODY_OK = {".", "-", "x", "X", "o", "O", "^"}
+BODY_OK: Set[str] = set()
 SLOT_KEY_RE = re.compile(r"^SLOT([0-9]+)$")
 
 ADP3_HEADER_FMT = "<4sBBBBHH"
@@ -98,17 +97,58 @@ def crc16_ccitt(data: bytes, poly: int = 0x1021, init: int = 0xFFFF) -> int:
     return crc
 
 
-def accent_from_char(ch: str) -> int:
-    c = ch.lower()
-    if c == ".":
-        return 0
-    if c == "-":
-        return 1
-    if c == "x":
-        return 2
-    if c in {"o", "^"}:
-        return 3
-    raise ValueError(f"Invalid ADT data symbol: {ch!r}")
+def load_accent_scheme(path: Path) -> Tuple[Dict[str, int], Dict[int, int]]:
+    """Load ADT symbols and representative velocities from the 6-accent scheme."""
+    try:
+        root = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Accent-level definition not found: {path}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read accent-level definition {path}: {exc}") from exc
+
+    schemes = root.get("schemes") if isinstance(root, dict) else None
+    scheme = schemes.get("6-accent") if isinstance(schemes, dict) else None
+    levels = scheme.get("levels") if isinstance(scheme, dict) else None
+    if not isinstance(levels, list) or len(levels) != 6:
+        raise ValueError(f"{path}: 6-accent must define exactly six levels including Rest")
+
+    symbol_to_level: Dict[str, int] = {}
+    velocities: Dict[int, int] = {}
+    expected_min = 0
+    for position, level in enumerate(levels):
+        if not isinstance(level, dict):
+            raise ValueError(f"{path}: 6-accent level {position} must be an object")
+        index = level.get("index")
+        symbol = level.get("symbol")
+        lo = level.get("min_velocity")
+        hi = level.get("max_velocity")
+        rep = level.get("representative_velocity")
+        if index != position:
+            raise ValueError(f"{path}: level {position} index must equal its array position")
+        if not isinstance(symbol, str) or len(symbol) != 1 or symbol in symbol_to_level:
+            raise ValueError(f"{path}: invalid or duplicate symbol at level {position}")
+        if not all(isinstance(v, int) for v in (lo, hi, rep)):
+            raise ValueError(f"{path}: level {position} velocity values must be integers")
+        if lo != expected_min or not 0 <= lo <= hi <= 127:
+            raise ValueError(f"{path}: velocity ranges must be contiguous and cover 0..127")
+        if not lo <= rep <= hi:
+            raise ValueError(f"{path}: representative velocity is outside level {position} range")
+        if position == 0 and not (symbol == "." and lo == hi == rep == 0):
+            raise ValueError(f"{path}: level 0 must be Rest with symbol '.' and velocity 0")
+        symbol_to_level[symbol] = index
+        velocities[index] = rep
+        expected_min = hi + 1
+
+    if expected_min != 128 or set(velocities) != set(range(6)):
+        raise ValueError(f"{path}: 6-accent levels must cover indices 0..5 and velocity 0..127")
+    return symbol_to_level, velocities
+
+
+def accent_from_char(ch: str, symbol_to_level: Dict[str, int]) -> int:
+    try:
+        return symbol_to_level[ch]
+    except KeyError as exc:
+        raise ValueError(f"Invalid ADT data symbol: {ch!r}") from exc
 
 
 def load_slot_maps(path: Path) -> Tuple[Dict[str, SlotMapDefinition], Dict[int, SlotMapDefinition]]:
@@ -190,11 +230,12 @@ def parse_inline_slot(value: str, index: int) -> SlotDefinition:
     return SlotDefinition(index, abbrev, (match.group(3) or abbrev).strip(), note, (note,))
 
 
-def parse_adt_v23(path: Path, slot_maps_by_name: Dict[str, SlotMapDefinition]) -> Pattern:
+def parse_adt_v23(path: Path, slot_maps_by_name: Dict[str, SlotMapDefinition], symbol_to_level: Dict[str, int]) -> Pattern:
     try:
         text = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise ValueError(f"Cannot read ADT {path}: {exc}") from exc
+    body_ok = set(symbol_to_level)
     raw_lines = text.splitlines()
     if not raw_lines or raw_lines[0].strip() != ADT_VERSION_LINE:
         raise ValueError(f"First line must be exactly {ADT_VERSION_LINE!r}")
@@ -214,7 +255,7 @@ def parse_adt_v23(path: Path, slot_maps_by_name: Dict[str, SlotMapDefinition]) -
             continue
         if in_data:
             compact = "".join(ch for ch in line if not ch.isspace())
-            if any(ch not in BODY_OK for ch in compact):
+            if any(ch not in body_ok for ch in compact):
                 raise ValueError(f"{path.name}:{line_no}: invalid pattern data")
             data_lines.append(compact)
             continue
@@ -268,7 +309,7 @@ def parse_adt_v23(path: Path, slot_maps_by_name: Dict[str, SlotMapDefinition]) -
             raise ValueError(f"STEP data has {len(data_lines)} rows; LENGTH={length}")
         if any(len(row) != slot_count for row in data_lines):
             raise ValueError(f"Every STEP row must contain {slot_count} slot characters")
-        steps = [[accent_from_char(ch) for ch in row] for row in data_lines]
+        steps = [[accent_from_char(ch, symbol_to_level) for ch in row] for row in data_lines]
     else:
         if len(data_lines) != slot_count:
             raise ValueError(f"SLOT data has {len(data_lines)} rows; slots={slot_count}")
@@ -277,7 +318,7 @@ def parse_adt_v23(path: Path, slot_maps_by_name: Dict[str, SlotMapDefinition]) -
         steps = [[0] * slot_count for _ in range(length)]
         for slot_index, row in enumerate(data_lines):
             for step_index, ch in enumerate(row):
-                steps[step_index][slot_index] = accent_from_char(ch)
+                steps[step_index][slot_index] = accent_from_char(ch, symbol_to_level)
 
     ppqn = int(metadata.get("PPQN", str(DEFAULT_PPQN)))
     if ppqn != DEFAULT_PPQN:
@@ -298,7 +339,40 @@ def parse_adt_v23(path: Path, slot_maps_by_name: Dict[str, SlotMapDefinition]) -
     )
 
 
-def decode_payload(payload: bytes, length: int, slots: int) -> List[List[int]]:
+def decode_payload_v23(payload: bytes, length: int, slots: int) -> List[List[int]]:
+    """Decode ADP v2.3 Final packed hits: bit7 reserved, slot bits 6..3, accent bits 2..0."""
+    steps = [[0] * slots for _ in range(length)]
+    offset = 0
+    for step_index in range(length):
+        if offset >= len(payload):
+            raise ValueError(f"Payload ended before step {step_index}")
+        hit_count = payload[offset]
+        offset += 1
+        if offset + hit_count > len(payload):
+            raise ValueError(f"Truncated hit list at step {step_index}")
+        seen_slots: Set[int] = set()
+        for _ in range(hit_count):
+            hit = payload[offset]
+            offset += 1
+            if hit & 0x80:
+                raise ValueError(f"Step {step_index}: reserved packed-hit bit 7 is not zero")
+            slot = (hit >> 3) & 0x0F
+            accent = hit & 0x07
+            if slot >= slots:
+                raise ValueError(f"Step {step_index}: slot {slot} outside slot map ({slots})")
+            if accent not in {1, 2, 3, 4, 5}:
+                raise ValueError(f"Step {step_index}: invalid stored accent {accent}")
+            if slot in seen_slots:
+                raise ValueError(f"Step {step_index}: duplicate slot index {slot}")
+            seen_slots.add(slot)
+            steps[step_index][slot] = accent
+    if offset != len(payload):
+        raise ValueError(f"ADP payload has {len(payload) - offset} unused byte(s)")
+    return steps
+
+
+def decode_payload_v22(payload: bytes, length: int, slots: int) -> List[List[int]]:
+    """Decode legacy ADP v2.2 packed hits: slot bits 5..2 and accent bits 1..0."""
     steps = [[0] * slots for _ in range(length)]
     offset = 0
     for step_index in range(length):
@@ -312,13 +386,13 @@ def decode_payload(payload: bytes, length: int, slots: int) -> List[List[int]]:
             hit = payload[offset]
             offset += 1
             if hit & 0xC0:
-                raise ValueError(f"Step {step_index}: reserved packed-hit bits are not zero")
+                raise ValueError(f"Step {step_index}: legacy reserved packed-hit bits are not zero")
             slot = (hit >> 2) & 0x0F
             accent = hit & 0x03
             if slot >= slots:
                 raise ValueError(f"Step {step_index}: slot {slot} outside slot map ({slots})")
             if accent == 0:
-                raise ValueError(f"Step {step_index}: stored hit has accent 0")
+                raise ValueError(f"Step {step_index}: stored legacy hit has accent 0")
             steps[step_index][slot] = max(steps[step_index][slot], accent)
     if offset != len(payload):
         raise ValueError(f"ADP payload has {len(payload) - offset} unused byte(s)")
@@ -333,7 +407,7 @@ def find_companion_adt(path: Path) -> Optional[Path]:
     return None
 
 
-def load_adp3(path: Path, data: bytes, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition]) -> Pattern:
+def load_adp3(path: Path, data: bytes, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition], symbol_to_level: Dict[str, int]) -> Pattern:
     if len(data) < ADP3_HEADER_SIZE:
         raise ValueError("ADP3 file is shorter than the 12-byte header")
     magic, version, subdiv_code, length, slot_map_id, payload_bytes, payload_crc = struct.unpack(
@@ -354,7 +428,7 @@ def load_adp3(path: Path, data: bytes, by_name: Dict[str, SlotMapDefinition], by
         companion = find_companion_adt(path)
         if companion is None:
             raise ValueError(f"ADP3 INLINE slot map requires companion {path.stem}.ADT beside the ADP")
-        inline_pattern = parse_adt_v23(companion, by_name)
+        inline_pattern = parse_adt_v23(companion, by_name, symbol_to_level)
         if inline_pattern.slot_map_name != "INLINE":
             raise ValueError(f"Companion {companion.name} must declare SLOT_MAP_ID=INLINE")
         if inline_pattern.length != length or inline_pattern.grid_type != SUBDIV_CODE_TO_STR[subdiv_code]:
@@ -372,7 +446,7 @@ def load_adp3(path: Path, data: bytes, by_name: Dict[str, SlotMapDefinition], by
         slot_full_names = [slot.extended for slot in slot_map.slots]
         slot_map_name = slot_map.name
 
-    steps = decode_payload(payload, length, len(slot_notes))
+    steps = decode_payload_v23(payload, length, len(slot_notes))
     return Pattern(
         name=path.stem, source_format="ADP v2.3", length=length, slots=len(slot_notes),
         grid_type=SUBDIV_CODE_TO_STR[subdiv_code], steps=steps,
@@ -406,7 +480,7 @@ def load_adp2(path: Path, data: bytes, by_name: Dict[str, SlotMapDefinition]) ->
     selected_slots = legacy.slots[:slots]
     return Pattern(
         name=path.stem, source_format="ADP v2.2", length=length, slots=slots,
-        grid_type=SUBDIV_CODE_TO_STR[grid_code], steps=decode_payload(payload, length, slots),
+        grid_type=SUBDIV_CODE_TO_STR[grid_code], steps=decode_payload_v22(payload, length, slots),
         slot_notes=[slot.representative_midi for slot in selected_slots],
         slot_abbr=[slot.abbrev for slot in selected_slots],
         slot_full_names=[slot.extended for slot in selected_slots],
@@ -416,21 +490,21 @@ def load_adp2(path: Path, data: bytes, by_name: Dict[str, SlotMapDefinition]) ->
     )
 
 
-def load_adp(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition]) -> Pattern:
+def load_adp(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition], symbol_to_level: Dict[str, int]) -> Pattern:
     data = path.read_bytes()
     magic = data[:4]
     if magic == b"ADP3":
-        return load_adp3(path, data, by_name, by_id)
+        return load_adp3(path, data, by_name, by_id, symbol_to_level)
     if magic == b"ADP2":
         return load_adp2(path, data, by_name)
     raise ValueError("Not an ADP2 or ADP3 file")
 
 
-def load_pattern(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition]) -> Pattern:
+def load_pattern(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition], symbol_to_level: Dict[str, int]) -> Pattern:
     if path.suffix.lower() == ".adt":
-        return parse_adt_v23(path, by_name)
+        return parse_adt_v23(path, by_name, symbol_to_level)
     if path.suffix.lower() == ".adp":
-        return load_adp(path, by_name, by_id)
+        return load_adp(path, by_name, by_id, symbol_to_level)
     raise ValueError("Input must have .ADT or .ADP extension")
 
 
@@ -452,7 +526,7 @@ class OrnamentSidecar:
 
 
 def _step_ticks(pattern: Pattern) -> int:
-    steps_per_whole = {"16": 16, "8T": 12, "16T": 24}[pattern.grid_type]
+    steps_per_whole = {"16": 16, "32": 32, "8T": 12, "16T": 24}[pattern.grid_type]
     numerator = pattern.ppqn * 4
     if numerator % steps_per_whole:
         raise ValueError(f"PPQN={pattern.ppqn} cannot represent SUBDIV={pattern.grid_type} with integer ticks")
@@ -561,22 +635,9 @@ def resolve_definition_file(explicit: Optional[Path], filename: str) -> Path:
     raise ValueError(f"{filename} not found in the current directory or beside this script")
 
 
-def load_accent_velocities(path: Path) -> Dict[int, int]:
-    """Read the 4-accent representatives; fall back only after a clear validation error."""
-    try:
-        root = json.loads(path.read_text(encoding="utf-8"))
-        levels = root["schemes"]["4-accent"]["levels"]
-    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Cannot read 4-accent representatives from {path}: {exc}") from exc
-    result: Dict[int, int] = {}
-    for level in levels:
-        index = level.get("index")
-        velocity = level.get("representative_velocity")
-        if isinstance(index, int) and isinstance(velocity, int) and 0 <= index <= 3 and 0 <= velocity <= 127:
-            result[index] = velocity
-    if set(result) != {0, 1, 2, 3} or result[0] != 0:
-        raise ValueError(f"{path}: 4-accent must define representative velocities for levels 0..3")
-    return result
+def load_accent_velocities(path: Path) -> Tuple[Dict[str, int], Dict[int, int]]:
+    """Return the authoritative 6-accent symbol map and representative velocities."""
+    return load_accent_scheme(path)
 
 
 def resolve_fluidsynth(explicit: Optional[Path]) -> Tuple[Path, str]:
@@ -735,11 +796,11 @@ def run_fluidsynth(
 
 
 
-ACCENT_TO_CHAR = {0: ".", 1: "-", 2: "x", 3: "o"}
+ACCENT_TO_CHAR = {0: ".", 1: "-", 2: "x", 3: "o", 4: "^", 5: "@"}
 
 
 def _steps_per_beat(grid_type: str) -> int:
-    return {"16": 4, "8T": 3, "16T": 6}[grid_type]
+    return {"16": 4, "32": 8, "8T": 3, "16T": 6}[grid_type]
 
 
 def _meter_numerator(time_sig: Optional[str]) -> int:
@@ -753,6 +814,8 @@ def _meter_numerator(time_sig: Optional[str]) -> int:
 def _beat_header(grid_type: str, beat_number: int) -> str:
     if grid_type == "16":
         return f"{beat_number}e&a"
+    if grid_type == "32":
+        return f"{beat_number}e&a...."
     if grid_type == "8T":
         return f"{beat_number}ta"
     # Six 16th-triplet positions per beat. Keep it compact and unambiguous.
@@ -842,7 +905,7 @@ def print_pattern_info(pattern: Pattern, bpm: float, repeat_text: str,
     print()
     print(f"File      : {pattern.name}")
     print(f"Format    : {display_format}")
-    print(f"Subdiv    : {pattern.grid_type}")
+    print(f"Resolution: {pattern.grid_type}")
     print(f"Length    : {pattern.length} steps")
     print(f"Tempo     : {bpm:g} BPM")
     print(f"Repeat    : {repeat_text}")
@@ -923,8 +986,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             slot_map_path = resolve_definition_file(args.slot_maps, DEFAULT_SLOT_MAP_FILE)
             accent_path = resolve_definition_file(args.accent_levels, DEFAULT_ACCENT_FILE)
             by_name, by_id = load_slot_maps(slot_map_path)
-            accents = load_accent_velocities(accent_path)
-            pattern = load_pattern(input_path, by_name, by_id)
+            symbol_to_level, accents = load_accent_velocities(accent_path)
+            global BODY_OK
+            BODY_OK = set(symbol_to_level)
+            pattern = load_pattern(input_path, by_name, by_id, symbol_to_level)
             orn_path = None if args.no_orn else find_orn_path(input_path, args.orn)
             if orn_path is not None and not orn_path.is_file():
                 raise ValueError(f"ORN file not found: {orn_path}")

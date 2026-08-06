@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Local PatternLab playback service using FluidSynth and an SF2 SoundFont.
 
-Version: 260805c
+Version: 260806a
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ except ImportError:
     MidiFile = None
 
 SCRIPT_NAME = "play_server.py"
-VERSION = "260805c"
+VERSION = "260806a"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 HOST = "127.0.0.1"
@@ -41,27 +41,62 @@ NO_REPORT_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ADX PatternLab Playback Server</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ADX Drum MIDI Player</title>
 <style>
-body { margin: 0; font-family: system-ui, sans-serif; background: #f4f6f8; color: #1f2933; }
-main { max-width: 760px; margin: 64px auto; padding: 28px; background: white; border: 1px solid #d9e0e7; border-radius: 12px; }
-h1 { margin-top: 0; font-size: 1.55rem; }
-p { line-height: 1.6; }
-pre { overflow-x: auto; padding: 14px; background: #f0f3f6; border-radius: 8px; font-family: Consolas, monospace; }
-.note { color: #5f6b76; }
+:root{color-scheme:light dark;--bg:#f4f6f8;--panel:#fff;--ink:#1f2933;--muted:#66717d;--line:#d8dee5;--accent:#2563eb}
+@media(prefers-color-scheme:dark){:root{--bg:#11151a;--panel:#1a2027;--ink:#e6edf3;--muted:#9aa6b2;--line:#303843;--accent:#60a5fa}}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+main{max-width:920px;margin:40px auto;padding:24px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+header{padding:22px 24px 16px;border-bottom:1px solid var(--line)}h1{margin:0 0 6px;font-size:1.55rem}p{margin:0;color:var(--muted)}
+.toolbar{display:flex;gap:8px;padding:14px 18px;border-bottom:1px solid var(--line)}button{border:1px solid var(--line);border-radius:7px;padding:7px 12px;background:var(--panel);color:var(--ink);cursor:pointer;font-weight:700}
+button.primary{color:#fff;background:var(--accent);border-color:var(--accent)}button:disabled{opacity:.55;cursor:default}
+.status{margin-left:auto;align-self:center;color:var(--muted);font-size:.9rem}table{width:100%;border-collapse:collapse}
+th,td{padding:11px 14px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:.82rem;text-transform:uppercase;letter-spacing:.04em}
+td.num,th.num{text-align:right}.empty{padding:28px;text-align:center;color:var(--muted)}footer{padding:12px 18px;color:var(--muted);font-size:.85rem}
 </style>
 </head>
 <body>
-<main>
-<h1>ADX PatternLab Playback Server</h1>
-<p>No PatternLab report was specified.</p>
-<p>Start the server with a report filename:</p>
-<pre>python play_server.py --report COOL_PatternLab.html</pre>
-<p>For a report in another directory:</p>
-<pre>python play_server.py --directory reports --report COOL_PatternLab.html</pre>
-<p class="note">Directory listing remains disabled for safety.</p>
-</main>
+<main><section class="panel">
+<header><h1>ADX Drum MIDI Player</h1><p>Standard MIDI files in the current directory</p></header>
+<div class="toolbar"><button id="refresh">Refresh</button><button id="stop">Stop</button><span id="status" class="status">Loading...</span></div>
+<div id="content"></div>
+<footer>Only regular .MID and .MIDI files in this directory are shown.</footer>
+</section></main>
+<script>
+(()=>{
+const content=document.getElementById('content'),status=document.getElementById('status');
+const refreshButton=document.getElementById('refresh'),stopButton=document.getElementById('stop');
+const esc=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const bytes=v=>!Number.isFinite(v)?'—':v<1024?`${v} B`:v<1048576?`${(v/1024).toFixed(1)} KB`:`${(v/1048576).toFixed(1)} MB`;
+const duration=v=>{if(!Number.isFinite(v))return '—';const t=Math.max(0,Math.round(v)),m=Math.floor(t/60),s=t%60;return m?`${m}:${String(s).padStart(2,'0')}`:`${s} s`};
+async function loadFiles(){
+ refreshButton.disabled=true;status.textContent='Loading...';
+ try{
+  const r=await fetch('/api/midi-files',{cache:'no-store'});if(!r.ok)throw new Error(await r.text());
+  const d=await r.json(),files=Array.isArray(d.files)?d.files:[];
+  if(!files.length){content.innerHTML='<div class="empty">No MIDI files found in this directory.</div>';status.textContent='0 files';return}
+  content.innerHTML=`<table><thead><tr><th>Name</th><th class="num">Duration</th><th class="num">Size</th><th></th></tr></thead><tbody>${files.map(f=>`<tr><td>${esc(f.name)}</td><td class="num">${duration(f.duration_seconds)}</td><td class="num">${bytes(f.size)}</td><td class="num"><button class="primary play" data-id="${esc(f.id)}">Play</button></td></tr>`).join('')}</tbody></table>`;
+  content.querySelectorAll('.play').forEach(b=>b.addEventListener('click',()=>playFile(b.dataset.id,b)));
+  status.textContent=`${files.length} file${files.length===1?'':'s'}`;
+ }catch(e){content.innerHTML=`<div class="empty">Failed to load MIDI files: ${esc(String(e))}</div>`;status.textContent='Error'}
+ finally{refreshButton.disabled=false}
+}
+async function playFile(id,b){
+ b.disabled=true;status.textContent='Starting playback...';
+ try{
+  const r=await fetch('/play-file',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  const d=await r.json();if(!r.ok)throw new Error(d.error||'Playback failed');status.textContent=`Playing: ${d.name}`;
+ }catch(e){status.textContent=`Error: ${e}`}finally{b.disabled=false}
+}
+async function stopPlayback(){
+ stopButton.disabled=true;
+ try{const r=await fetch('/stop',{method:'POST'});if(!r.ok)throw new Error(await r.text());status.textContent='Stopped'}
+ catch(e){status.textContent=`Error: ${e}`}finally{stopButton.disabled=false}
+}
+refreshButton.addEventListener('click',loadFiles);stopButton.addEventListener('click',stopPlayback);loadFiles();
+})();
+</script>
 </body>
 </html>
 """
@@ -402,9 +437,10 @@ def resolve_soundfont(explicit: Path | None, parser: argparse.ArgumentParser) ->
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Serve a PatternLab HTML report with ADX playback support.",
+        description="Serve a PatternLab HTML report or browse/play MIDI files in the current directory.",
         epilog=(
             "Examples:\n"
+            "  python play_server.py\n"
             "  python play_server.py --report COOL_PatternLab.html\n"
             "  python play_server.py --report .\\reports\\COOL_PatternLab.html\n"
             "  python play_server.py --report E:\\Hobbies\\ADX\\reports\\COOL_PatternLab.html"
@@ -434,8 +470,8 @@ def main() -> int:
     parser.add_argument(
         "--report",
         metavar="HTML",
-        required=True,
-        help="PatternLab HTML report path (relative or absolute)",
+        required=False,
+        help="optional PatternLab HTML report path; omit to browse MIDI files in the current directory",
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--audio-driver", default="dsound", help="FluidSynth audio driver (default: dsound)")
@@ -445,27 +481,33 @@ def main() -> int:
     fluidsynth, fluidsynth_source = resolve_fluidsynth(args.fluidsynth, parser)
     soundfont, soundfont_source = resolve_soundfont(args.sf2, parser)
 
-    report_path = Path(args.report).expanduser().resolve()
-    if not report_path.is_file():
-        parser.error(f"report not found: {report_path}")
-    if report_path.suffix.lower() not in {".html", ".htm"}:
-        parser.error(f"--report must be an HTML file: {report_path}")
     if not 1 <= args.port <= 65535:
         parser.error("--port must be 1..65535")
 
-    directory = report_path.parent
-    relative_report = Path(report_path.name)
+    report_path: Path | None = None
+    if args.report:
+        report_path = Path(args.report).expanduser().resolve()
+        if not report_path.is_file():
+            parser.error(f"report not found: {report_path}")
+        if report_path.suffix.lower() not in {".html", ".htm"}:
+            parser.error(f"--report must be an HTML file: {report_path}")
+        directory = report_path.parent
+    else:
+        directory = Path.cwd().resolve()
 
     player = PlayerState(fluidsynth, soundfont, args.audio_driver)
     library = MidiLibrary(directory)
     library.refresh()
-    handler = make_handler(player, directory, library, report_selected=True)
+    handler = make_handler(player, directory, library, report_selected=report_path is not None)
     server = ThreadingHTTPServer((HOST, args.port), handler)
     base_url = f"http://{HOST}:{args.port}/"
 
-    from urllib.parse import quote
-    report_url_path = quote(relative_report.as_posix(), safe="/")
-    open_url = base_url + report_url_path
+    if report_path is not None:
+        from urllib.parse import quote
+        report_url_path = quote(report_path.name, safe="/")
+        open_url = base_url + report_url_path
+    else:
+        open_url = base_url
 
     print(f"PatternLab FluidSynth service ({VERSION_TEXT})")
     print(f"  URL        : {base_url}")

@@ -40,7 +40,7 @@ from mido import Message, MetaMessage, MidiFile, MidiTrack
 from adc_rhythm_analysis import detect_flams
 
 SCRIPT_NAME = "adc-midi-split.py"
-VERSION = "260802a"
+VERSION = "260806b"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 REQUIRED_COLUMNS = {
@@ -54,16 +54,11 @@ REQUIRED_COLUMNS = {
     "SUBDIV",
     "SOURCE",
 }
-VALID_SUBDIV = {"16", "8T", "16T"}
+VALID_SUBDIV = {"16", "32", "8T", "16T"}
 NAME_RE = re.compile(r"^[A-Z0-9]{3}_[0-9]{4}$")
 
-# PDF accent palette. Empty cells remain white.
-PDF_ACCENT_COLORS = {
-    1: (70, 130, 255),   # soft: blue
-    2: (55, 170, 95),    # normal: green
-    3: (220, 55, 55),    # accent: red
-}
-PDF_VELOCITY_THRESHOLDS = (64, 96)
+# PDF accent levels are loaded from accent_levels.json.
+DEFAULT_ACCENT_SCHEME = "6-accent"
 
 try:
     from PIL import Image, ImageDraw, ImageFont  # type: ignore
@@ -71,6 +66,31 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
+
+
+@dataclass(frozen=True)
+class AccentLevel:
+    index: int
+    name: str
+    min_velocity: int
+    max_velocity: int
+    color: Tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class AccentScheme:
+    name: str
+    levels: Tuple[AccentLevel, ...]
+
+    @property
+    def colors(self) -> Dict[int, Tuple[int, int, int]]:
+        return {level.index: level.color for level in self.levels}
+
+    def level_for_velocity(self, velocity: int) -> int:
+        for level in self.levels:
+            if level.min_velocity <= velocity <= level.max_velocity:
+                return level.index
+        fail(f"velocity {velocity} is not covered by accent scheme {self.name!r}")
 
 
 @dataclass(frozen=True)
@@ -190,6 +210,91 @@ def choose_font(size: int, bold: bool = False):
         except Exception:
             continue
     return ImageFont.load_default()
+
+
+
+# ---------------------------------------------------------------------------
+# Accent-level JSON
+# ---------------------------------------------------------------------------
+
+
+def load_accent_scheme(path: Path, scheme_name: str) -> AccentScheme:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        fail(f"accent-level definition not found: {path}")
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read accent-level definition {path}: {exc}")
+
+    schemes = data.get("schemes") if isinstance(data, dict) else None
+    if not isinstance(schemes, dict):
+        fail(f"accent-level JSON {path}: missing object 'schemes'")
+
+    raw_scheme = schemes.get(scheme_name)
+    if not isinstance(raw_scheme, dict):
+        available = ", ".join(sorted(str(name) for name in schemes))
+        fail(f"accent scheme {scheme_name!r} not found in {path}; available: {available}")
+
+    raw_levels = raw_scheme.get("levels")
+    if not isinstance(raw_levels, list) or not raw_levels:
+        fail(f"accent scheme {scheme_name!r}: levels must be a non-empty array")
+
+    levels: List[AccentLevel] = []
+    seen_indices: Set[int] = set()
+    covered_velocities: Set[int] = set()
+
+    for raw in raw_levels:
+        if not isinstance(raw, dict):
+            fail(f"accent scheme {scheme_name!r}: each level must be an object")
+
+        index = raw.get("index")
+        name = raw.get("name")
+        min_velocity = raw.get("min_velocity")
+        max_velocity = raw.get("max_velocity")
+        color = raw.get("color")
+
+        if not isinstance(index, int) or index < 0 or index in seen_indices:
+            fail(f"accent scheme {scheme_name!r}: invalid or duplicate index {index!r}")
+        if not isinstance(name, str) or not name.strip():
+            fail(f"accent scheme {scheme_name!r}, index {index}: invalid name")
+        if (
+            not isinstance(min_velocity, int)
+            or not isinstance(max_velocity, int)
+            or not (0 <= min_velocity <= max_velocity <= 127)
+        ):
+            fail(f"accent scheme {scheme_name!r}, index {index}: invalid velocity range")
+        if (
+            not isinstance(color, list)
+            or len(color) != 3
+            or any(not isinstance(value, int) or not 0 <= value <= 255 for value in color)
+        ):
+            fail(f"accent scheme {scheme_name!r}, index {index}: color must be [R, G, B]")
+
+        velocity_values = set(range(min_velocity, max_velocity + 1))
+        if covered_velocities & velocity_values:
+            fail(f"accent scheme {scheme_name!r}: overlapping velocity ranges")
+
+        covered_velocities.update(velocity_values)
+        seen_indices.add(index)
+        levels.append(
+            AccentLevel(
+                index=index,
+                name=name.strip(),
+                min_velocity=min_velocity,
+                max_velocity=max_velocity,
+                color=tuple(color),
+            )
+        )
+
+    levels.sort(key=lambda level: level.index)
+    if [level.index for level in levels] != list(range(len(levels))):
+        fail(f"accent scheme {scheme_name!r}: indices must be contiguous from 0")
+    if covered_velocities != set(range(128)):
+        fail(f"accent scheme {scheme_name!r}: velocity coverage must be exactly 0..127")
+    if levels[0].min_velocity != 0 or levels[0].max_velocity != 0:
+        fail(f"accent scheme {scheme_name!r}: index 0 must represent rest velocity 0")
+
+    return AccentScheme(scheme_name, tuple(levels))
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +427,7 @@ def load_pattern_csv(path: Path) -> List[PatternSpec]:
 
             subdiv = row.get("SUBDIV", "").upper()
             if subdiv not in VALID_SUBDIV:
-                fail(f"CSV row {row_number}: SUBDIV must be one of 16, 8T, 16T, got {subdiv!r}")
+                fail(f"CSV row {row_number}: SUBDIV must be one of 16, 32, 8T, 16T, got {subdiv!r}")
 
             orn_raw = row.get("ORN", "NO") or "NO"
             orn = parse_yes_no(orn_raw, field="ORN", row_number=row_number)
@@ -600,7 +705,7 @@ def convert_pdf_to_a4_with_ghostscript(gs_exe: str, input_pdf: Path, output_pdf:
 
 def steps_for_pattern(spec: PatternSpec, bar_count: int, numerator: int, denominator: int) -> int:
     quarter_notes_per_bar = numerator * 4 / denominator
-    cells_per_quarter = {"16": 4, "8T": 3, "16T": 6}[spec.subdiv]
+    cells_per_quarter = {"16": 4, "32": 8, "8T": 3, "16T": 6}[spec.subdiv]
     columns = quarter_notes_per_bar * cells_per_quarter * bar_count
     rounded = round(columns)
     if not math.isclose(columns, rounded, abs_tol=1e-9):
@@ -611,14 +716,9 @@ def steps_for_pattern(spec: PatternSpec, bar_count: int, numerator: int, denomin
     return max(1, int(rounded))
 
 
-def pdf_accent_level(velocity: int) -> int:
-    """Map MIDI velocity to the three PDF accent colors."""
-    low, high = PDF_VELOCITY_THRESHOLDS
-    if velocity < low:
-        return 1
-    if velocity < high:
-        return 2
-    return 3
+def pdf_accent_level(velocity: int, accent_scheme: AccentScheme) -> int:
+    """Map MIDI velocity through the selected accent scheme."""
+    return accent_scheme.level_for_velocity(velocity)
 
 
 def quantized_slot_cells(
@@ -627,6 +727,7 @@ def quantized_slot_cells(
     bars: Sequence[BarInfo],
     events: Sequence[AbsoluteEvent],
     tpq: int,
+    accent_scheme: AccentScheme,
 ) -> Tuple[int, Dict[Tuple[int, int], int], Set[Tuple[int, int]]]:
     """Return accent levels by cell and flam-main cells for PDF rendering.
 
@@ -702,7 +803,7 @@ def quantized_slot_cells(
         if cell is None:
             continue
         assert isinstance(event.message, Message)
-        level = pdf_accent_level(int(event.message.velocity))
+        level = pdf_accent_level(int(event.message.velocity), accent_scheme)
         cells[cell] = max(level, cells.get(cell, 0))
 
     return columns, cells, flam_cells
@@ -715,13 +816,14 @@ def render_pattern_png(
     events: Sequence[AbsoluteEvent],
     output_path: Path,
     tpq: int,
+    accent_scheme: AccentScheme,
 ) -> None:
     if not PIL_AVAILABLE:
         fail("Pillow is required for --pdf (pip install Pillow)")
 
     first_bar = bars[spec.start_bar - 1]
     bar_count = spec.end_bar - spec.start_bar + 1
-    columns, cells, flam_cells = quantized_slot_cells(spec, slot_map, bars, events, tpq)
+    columns, cells, flam_cells = quantized_slot_cells(spec, slot_map, bars, events, tpq, accent_scheme)
     row_slots = list(reversed(slot_map.slots))
     rows = len(row_slots)
 
@@ -748,7 +850,7 @@ def render_pattern_png(
 
     gx, gy = left_margin, top_margin
     quarter_notes_per_bar = first_bar.numerator * 4 / first_bar.denominator
-    cells_per_quarter = {"16": 4, "8T": 3, "16T": 6}[spec.subdiv]
+    cells_per_quarter = {"16": 4, "32": 8, "8T": 3, "16T": 6}[spec.subdiv]
     steps_per_bar = int(round(quarter_notes_per_bar * cells_per_quarter))
 
     for col in range(columns + 1):
@@ -778,7 +880,7 @@ def render_pattern_png(
         y0 = gy + row * cell_h + 1
         x1 = x0 + cell_w - 2
         y1 = y0 + cell_h - 2
-        fill_color = PDF_ACCENT_COLORS[accent_level]
+        fill_color = accent_scheme.colors[accent_level]
         draw.rectangle((x0, y0, x1, y1), fill=fill_color)
 
         if (slot_index, col) in flam_cells:
@@ -803,6 +905,7 @@ def create_pdf_catalog(
     input_midi: Path,
     input_midi_tpq: int,
     final_pdf: Path,
+    accent_scheme: AccentScheme,
     *,
     keep_png: bool,
     no_ghostscript: bool,
@@ -819,7 +922,7 @@ def create_pdf_catalog(
         png_paths: List[Path] = []
         for spec in specs:
             png_path = tmp_dir / f"{spec.name}_grid.png"
-            render_pattern_png(spec, slot_maps[spec.slot_map], bars, events, png_path, input_midi_tpq)
+            render_pattern_png(spec, slot_maps[spec.slot_map], bars, events, png_path, input_midi_tpq, accent_scheme)
             png_paths.append(png_path)
 
         # Same proven layout as the reference script: A4 ~300 DPI, 2 x 5.
@@ -934,6 +1037,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=None,
         help="slot_map_definitions.json (default: beside this script)",
     )
+    parser.add_argument(
+        "--accent-levels",
+        type=Path,
+        default=None,
+        help="accent_levels.json (default: beside this script)",
+    )
+    parser.add_argument(
+        "--accent-scheme",
+        default=DEFAULT_ACCENT_SCHEME,
+        help=f"Accent scheme used for PDF colors (default: {DEFAULT_ACCENT_SCHEME})",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs")
     parser.add_argument("--keep-png", action="store_true", help="Keep per-pattern grid PNG files beside the PDF")
     parser.add_argument("--no-ghostscript", action="store_true", help="Do not run Ghostscript even if found")
@@ -953,7 +1067,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         fail(f"CSV file not found: {args.pattern_csv}")
 
     slot_map_path = args.slot_maps or Path(__file__).with_name("slot_map_definitions.json")
+    accent_levels_path = args.accent_levels or Path(__file__).with_name("accent_levels.json")
     slot_maps = load_slot_maps(slot_map_path)
+    accent_scheme = load_accent_scheme(accent_levels_path, args.accent_scheme)
     specs = load_pattern_csv(args.pattern_csv)
 
     try:
@@ -975,6 +1091,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"[OK] MIDI       : {args.input_midi}")
     print(f"[OK] CSV        : {args.pattern_csv}")
     print(f"[OK] SLOT_MAPS  : {slot_map_path}")
+    print(f"[OK] ACCENTS    : {accent_levels_path} ({accent_scheme.name})")
     print(f"[OK] MIDI type  : {mid.type}")
     print(f"[OK] TPQ        : {mid.ticks_per_beat}")
     print(f"[OK] bars       : {len(bars)}")
@@ -1013,6 +1130,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.input_midi,
             mid.ticks_per_beat,
             pdf_output,
+            accent_scheme,
             keep_png=args.keep_png,
             no_ghostscript=args.no_ghostscript,
             overwrite=args.overwrite,

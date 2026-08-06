@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adc-mid2adt.py 260802a
+"""adc-mid2adt.py 260806c
 
 Convert split drum-pattern MIDI files to ADT v2.3 text files.
 
@@ -19,6 +19,8 @@ ADT v2.3 output
 - SLOT_MAP_ID=INLINE requires matching SLOT0...SLOTn definitions
 - [DATA] marker
 - STEP-major data by default (one row per step, one character per slot)
+- SUBDIV values: 16, 32, 8T, 16T
+- Accent symbols are loaded from accent_levels.json (6-accent)
 
 Required PatternLab CSV
 -----------------------
@@ -44,19 +46,26 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from mido import Message, MetaMessage, MidiFile
 
-from adc_rhythm_analysis import detect_flams
+from adc_rhythm_analysis import SUPPORTED_RESOLUTIONS, detect_flams
 
 SCRIPT_NAME = "adc-mid2adt.py"
-VERSION = "260802a"
+VERSION = "260806c"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 ADT_VERSION = "ADT v2.3"
 DEFAULT_PPQN = 240
 DEFAULT_KIT = "GM_STD"
 DEFAULT_SLOT_MAP = "LEGACY"
 DEFAULT_ORIENTATION = "STEP"
-VALID_SUBDIV = {"16", "8T", "16T"}
+DEFAULT_ACCENT_SCHEME = "6-accent"
+VALID_SUBDIV = {"16", "32", "8T", "16T"}
 NAME_RE = re.compile(r"^[A-Z0-9]{3}_[0-9]{4}$")
-SUBDIV_PER_QUARTER = {"16": 4, "8T": 3, "16T": 6}
+SUBDIV_PER_QUARTER = {"16": 4, "32": 8, "8T": 3, "16T": 6}
+
+if tuple(SUPPORTED_RESOLUTIONS) != ("16", "32", "8T", "16T"):
+    raise RuntimeError(
+        "Straight-32 capable adc_rhythm_analysis.py is required in the same directory "
+        "(supported resolutions must be 16, 32, 8T, 16T)."
+    )
 
 
 @dataclass(frozen=True)
@@ -169,9 +178,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Drum MIDI channel, 1-based (default: 10)",
     )
     parser.add_argument(
-        "--vel-thresholds",
-        default="64,96",
-        help="Two ascending velocity thresholds for weak/medium/strong hits (default: 64,96)",
+        "--accent-levels",
+        type=Path,
+        default=None,
+        help="accent_levels.json (default: beside this script)",
     )
     parser.add_argument(
         "--write-ppqn",
@@ -188,22 +198,60 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return args
 
 
-def parse_thresholds(text: str) -> Tuple[int, int]:
+def load_accent_scheme(path: Path, scheme_name: str = DEFAULT_ACCENT_SCHEME) -> Tuple[dict, ...]:
+    """Load and validate the authoritative ADX accent scheme."""
     try:
-        values = tuple(sorted(int(part.strip()) for part in text.split(",")))
-    except ValueError:
-        fail("--vel-thresholds must contain two integers, e.g. 64,96")
-    if len(values) != 2 or not (1 <= values[0] < values[1] <= 127):
-        fail("--vel-thresholds must be two ascending integers in 1..127")
-    return values  # type: ignore[return-value]
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        fail(f"accent-level definition not found: {path}")
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read accent-level definition {path}: {exc}")
+
+    schemes = data.get("schemes") if isinstance(data, dict) else None
+    scheme = schemes.get(scheme_name) if isinstance(schemes, dict) else None
+    levels = scheme.get("levels") if isinstance(scheme, dict) else None
+    if not isinstance(levels, list) or len(levels) != 6:
+        fail(f"{scheme_name}: exactly 6 levels are required, including rest")
+
+    validated = []
+    expected_min = 0
+    seen_symbols = set()
+    for index, level in enumerate(levels):
+        if not isinstance(level, dict):
+            fail(f"{scheme_name} level {index}: must be an object")
+        if level.get("index") != index:
+            fail(f"{scheme_name} level {index}: index must equal its array position")
+        lo = level.get("min_velocity")
+        hi = level.get("max_velocity")
+        rep = level.get("representative_velocity")
+        symbol = level.get("symbol")
+        if not all(isinstance(value, int) for value in (lo, hi, rep)):
+            fail(f"{scheme_name} level {index}: velocity values must be integers")
+        if lo != expected_min or not 0 <= lo <= hi <= 127:
+            fail(f"{scheme_name} level {index}: ranges must be contiguous and cover 0..127")
+        if not lo <= rep <= hi:
+            fail(f"{scheme_name} level {index}: representative_velocity must lie within its range")
+        if not isinstance(symbol, str) or len(symbol) != 1 or symbol in seen_symbols:
+            fail(f"{scheme_name} level {index}: symbol must be one unique character")
+        if index == 0 and not (lo == hi == rep == 0 and symbol == "."):
+            fail(f"{scheme_name}: level 0 must be Rest with velocity 0 and symbol '.'")
+        seen_symbols.add(symbol)
+        expected_min = hi + 1
+        validated.append(level)
+    if expected_min != 128:
+        fail(f"{scheme_name}: ranges must end at velocity 127")
+    return tuple(validated)
 
 
-def velocity_char(velocity: int, thresholds: Tuple[int, int]) -> str:
-    if velocity < thresholds[0]:
-        return "-"
-    if velocity < thresholds[1]:
-        return "x"
-    return "o"
+def accent_symbol(velocity: int, levels: Tuple[dict, ...]) -> str:
+    value = max(0, min(127, int(velocity)))
+    for level in levels:
+        if level["min_velocity"] <= value <= level["max_velocity"]:
+            symbol = str(level["symbol"])
+            if level["index"] == 0:
+                fail("a present MIDI note cannot map to Rest")
+            return symbol
+    fail(f"velocity {value} is not covered by {DEFAULT_ACCENT_SCHEME}")
 
 
 def load_slot_maps(path: Path) -> Dict[str, SlotMapDefinition]:
@@ -366,24 +414,6 @@ def infer_slot_map(notes: Set[int], maps: Dict[str, SlotMapDefinition]) -> SlotM
     fail(f"no SLOT_MAP accepts all MIDI notes; nearest {chosen.name}, missing {missing}")
 
 
-def subdivision_error(pattern: MidiPattern, subdiv: str) -> float:
-    ticks_per_step = pattern.tpq / SUBDIV_PER_QUARTER[subdiv]
-    if ticks_per_step <= 0:
-        return float("inf")
-    errors = []
-    for hit in pattern.hits:
-        nearest = round(hit.tick / ticks_per_step) * ticks_per_step
-        errors.append(abs(hit.tick - nearest) / ticks_per_step)
-    return sum(errors) / max(1, len(errors))
-
-
-def infer_subdiv(pattern: MidiPattern) -> str:
-    scores = {subdiv: subdivision_error(pattern, subdiv) for subdiv in VALID_SUBDIV}
-    # Prefer the less dense representation when scores are effectively tied.
-    order = {"16": 0, "8T": 1, "16T": 2}
-    return min(scores, key=lambda key: (round(scores[key], 6), order[key]))
-
-
 def expected_length(pattern: MidiPattern, subdiv: str) -> int:
     ticks_per_step = pattern.tpq / SUBDIV_PER_QUARTER[subdiv]
     if ticks_per_step <= 0:
@@ -402,15 +432,16 @@ def build_grid(
     pattern: MidiPattern,
     slot_map: SlotMapDefinition,
     subdiv: str,
-    thresholds: Tuple[int, int],
+    accent_levels: Tuple[dict, ...],
 ) -> Tuple[List[List[str]], int]:
     length = expected_length(pattern, subdiv)
     grid = [["." for _ in slot_map.slots] for _ in range(length)]
     ticks_per_step = pattern.tpq / SUBDIV_PER_QUARTER[subdiv]
-    strength = {".": 0, "-": 1, "x": 2, "o": 3}
+    strength = {str(level["symbol"]): int(level["index"]) for level in accent_levels}
 
-    # ADT stores only the regular grid. Conservative flam grace notes, including
-    # a final grace that decorates step 0 across the loop boundary, belong in ORN.
+    # Resolution was selected and reviewed in PatternLab. Apply the shared flam
+    # policy using that selected resolution: grid-representable notes remain in
+    # ADT, and only genuinely off-grid grace notes are excluded for ORN.
     flam_events = [
         {"tick": hit.tick, "note": hit.note, "velocity": hit.velocity, "track": 0}
         for hit in pattern.hits
@@ -420,6 +451,7 @@ def build_grid(
         pattern.tpq,
         loop_ticks=pattern.total_ticks,
         loop_start=0,
+        selected_resolution=subdiv,
     )
     excluded_indices = {
         int(item["grace_index"])
@@ -435,7 +467,7 @@ def build_grid(
             fail(f"SLOT_MAP {slot_map.name} does not accept MIDI note {hit.note}")
         step = int(round(hit.tick / ticks_per_step))
         step = max(0, min(length - 1, step))
-        char = velocity_char(hit.velocity, thresholds)
+        char = accent_symbol(hit.velocity, accent_levels)
         if strength[char] > strength[grid[step][slot]]:
             grid[step][slot] = char
     return grid, len(excluded_indices)
@@ -529,7 +561,7 @@ def convert_one(
     maps: Dict[str, SlotMapDefinition],
     catalog: Dict[str, CatalogEntry],
     args: argparse.Namespace,
-    thresholds: Tuple[int, int],
+    accent_levels: Tuple[dict, ...],
 ) -> Tuple[bool, str]:
     name = midi_path.stem.upper()
     if not NAME_RE.fullmatch(name):
@@ -555,7 +587,7 @@ def convert_one(
         slot_map = infer_slot_map({hit.note for hit in pattern.hits}, maps)
 
     source = entry.source
-    grid, excluded_flam_graces = build_grid(pattern, slot_map, subdiv, thresholds)
+    grid, excluded_flam_graces = build_grid(pattern, slot_map, subdiv, accent_levels)
     output_path = output_dir / f"{name}.ADT"
     if output_path.exists() and not args.overwrite:
         return False, f"exists: {output_path} (use --overwrite)"
@@ -593,11 +625,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     input_path, output_dir = resolve_paths(args)
     slot_map_path = args.slot_maps or Path(__file__).with_name("slot_map_definitions.json")
     maps = load_slot_maps(slot_map_path)
+    accent_levels_path = args.accent_levels or Path(__file__).with_name("accent_levels.json")
+    accent_levels = load_accent_scheme(accent_levels_path)
     catalog_csv = args.catalog_csv
     if not catalog_csv.is_file():
         fail(f"catalog CSV not found: {catalog_csv}")
     catalog = load_catalog(catalog_csv)
-    thresholds = parse_thresholds(args.vel_thresholds)
     midi_files = list(iter_midi_files(input_path, args.recursive))
     if not midi_files:
         fail(f"no MIDI files found in {input_path}")
@@ -606,6 +639,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"[OK] input      : {input_path}")
     print(f"[OK] output     : {output_dir}")
     print(f"[OK] slot maps  : {slot_map_path}")
+    print(f"[OK] accents    : {accent_levels_path} ({DEFAULT_ACCENT_SCHEME})")
     print(f"[OK] MIDI files : {len(midi_files)}")
     print(f"[OK] catalog    : {catalog_csv} ({len(catalog)} EXPORT=YES entries)")
 
@@ -619,7 +653,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 maps=maps,
                 catalog=catalog,
                 args=args,
-                thresholds=thresholds,
+                accent_levels=accent_levels,
             )
         except SystemExit as exc:
             success, message = False, str(exc).removeprefix("[ERROR] ")
