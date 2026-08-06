@@ -1,25 +1,105 @@
 {
   "schema_version": "1.0",
-  "description": "Velocity boundaries and representative MIDI velocities for PatternLab comparison MIDI export. Rest is included as one state.",
+  "description": "Velocity boundaries, representative MIDI velocities, and ADT display symbols for ADX accent-level schemes. Rest is included as one state.",
   "schemes": {
     "4-accent": {
       "description": "Rest plus three ADX hit strengths",
       "levels": [
-        {"index": 0, "name": "rest", "label": "Rest", "min_velocity": 0, "max_velocity": 0, "representative_velocity": 0},
-        {"index": 1, "name": "weak", "label": "Weak Hit", "min_velocity": 1, "max_velocity": 60, "representative_velocity": 40},
-        {"index": 2, "name": "medium", "label": "Medium Hit", "min_velocity": 61, "max_velocity": 100, "representative_velocity": 80},
-        {"index": 3, "name": "strong", "label": "Strong Hit", "min_velocity": 101, "max_velocity": 127, "representative_velocity": 120}
+        {
+          "index": 0,
+          "name": "rest",
+          "label": "Rest",
+          "min_velocity": 0,
+          "max_velocity": 0,
+          "representative_velocity": 0,
+          "symbol": "."
+        },
+        {
+          "index": 1,
+          "name": "weak",
+          "label": "Weak Hit",
+          "min_velocity": 1,
+          "max_velocity": 60,
+          "representative_velocity": 40,
+          "symbol": "-"
+        },
+        {
+          "index": 2,
+          "name": "medium",
+          "label": "Medium Hit",
+          "min_velocity": 61,
+          "max_velocity": 100,
+          "representative_velocity": 80,
+          "symbol": "x"
+        },
+        {
+          "index": 3,
+          "name": "strong",
+          "label": "Strong Hit",
+          "min_velocity": 101,
+          "max_velocity": 127,
+          "representative_velocity": 120,
+          "symbol": "o"
+        }
       ]
     },
     "6-accent": {
       "description": "Rest plus five hit strengths for comparison playback",
       "levels": [
-        {"index": 0, "name": "rest", "label": "Rest", "min_velocity": 0, "max_velocity": 0, "representative_velocity": 0},
-        {"index": 1, "name": "very_weak", "label": "Very Weak Hit", "min_velocity": 1, "max_velocity": 30, "representative_velocity": 20},
-        {"index": 2, "name": "weak", "label": "Weak Hit", "min_velocity": 31, "max_velocity": 55, "representative_velocity": 45},
-        {"index": 3, "name": "medium", "label": "Medium Hit", "min_velocity": 56, "max_velocity": 80, "representative_velocity": 70},
-        {"index": 4, "name": "strong", "label": "Strong Hit", "min_velocity": 81, "max_velocity": 105, "representative_velocity": 95},
-        {"index": 5, "name": "very_strong", "label": "Very Strong Hit", "min_velocity": 106, "max_velocity": 127, "representative_velocity": 120}
+        {
+          "index": 0,
+          "name": "rest",
+          "label": "Rest",
+          "min_velocity": 0,
+          "max_velocity": 0,
+          "representative_velocity": 0,
+          "symbol": "."
+        },
+        {
+          "index": 1,
+          "name": "very_weak",
+          "label": "Very Weak Hit",
+          "min_velocity": 1,
+          "max_velocity": 30,
+          "representative_velocity": 20,
+          "symbol": "-"
+        },
+        {
+          "index": 2,
+          "name": "weak",
+          "label": "Weak Hit",
+          "min_velocity": 31,
+          "max_velocity": 55,
+          "representative_velocity": 45,
+          "symbol": "x"
+        },
+        {
+          "index": 3,
+          "name": "medium",
+          "label": "Medium Hit",
+          "min_velocity": 56,
+          "max_velocity": 80,
+          "representative_velocity": 70,
+          "symbol": "o"
+        },
+        {
+          "index": 4,
+          "name": "strong",
+          "label": "Strong Hit",
+          "min_velocity": 81,
+          "max_velocity": 105,
+          "representative_velocity": 95,
+          "symbol": "^"
+        },
+        {
+          "index": 5,
+          "name": "very_strong",
+          "label": "Very Strong Hit",
+          "min_velocity": 106,
+          "max_velocity": 127,
+          "representative_velocity": 120,
+          "symbol": "@"
+        }
       ]
     }
   }
