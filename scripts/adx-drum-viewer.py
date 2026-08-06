@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """adx-drum-viewer.py 260802a
 
-Render ADT/ADP patterns and optional same-basename ORN sidecars as one
+Render six-level ADT/ADP patterns and optional same-basename ORN sidecars as one
 self-contained interactive HTML/SVG catalog.
 
 Input forms
@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 SCRIPT_NAME = "adx-drum-viewer.py"
-VERSION = "260802d"
+VERSION = "260807f"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 ADT_VERSION_LINE = "; ADT v2.3"
 DEFAULT_SLOT_MAP = "LEGACY"
@@ -47,7 +47,7 @@ INLINE_SLOT_MAP_ID = 255
 SUBDIV_CODE_TO_STR = {0: "16", 1: "8T", 2: "16T"}
 VALID_SUBDIV = set(SUBDIV_CODE_TO_STR.values())
 STEPS_PER_QUARTER = {"16": 4, "8T": 3, "16T": 6}
-BODY_OK = {".", "-", "x", "X", "o", "O", "^"}
+BODY_OK = {".", "-", "x", "X", "o", "O", "^", "@"}
 SLOT_KEY_RE = re.compile(r"^SLOT([0-9]+)$")
 NAME_RE = re.compile(r"^[A-Z0-9]{3}_[0-9]{4}$")
 ADP3_HEADER_FMT = "<4sBBBBHH"
@@ -68,6 +68,18 @@ class SlotMapDefinition:
     map_id: int
     name: str
     slots: Tuple[SlotDefinition, ...]
+
+
+@dataclass(frozen=True)
+class AccentLevel:
+    index: int
+    name: str
+    label: str
+    min_velocity: int
+    max_velocity: int
+    representative_velocity: int
+    symbol: str
+    color: Tuple[int, int, int]
 
 
 @dataclass
@@ -111,13 +123,83 @@ def crc16_ccitt(data: bytes, poly: int = 0x1021, init: int = 0xFFFF) -> int:
     return crc
 
 
-def accent_from_char(ch: str) -> int:
-    c = ch.lower()
-    if c == ".": return 0
-    if c == "-": return 1
-    if c == "x": return 2
-    if c in {"o", "^"}: return 3
-    raise ValueError(f"invalid ADT data symbol: {ch!r}")
+def build_symbol_map(accent_levels: Dict[int, AccentLevel]) -> Dict[str, int]:
+    """Build a case-insensitive ADT symbol-to-level mapping from the JSON scheme."""
+    symbol_map: Dict[str, int] = {}
+    for index, level in accent_levels.items():
+        key = level.symbol.lower()
+        if key in symbol_map and symbol_map[key] != index:
+            raise ValueError(f"duplicate accent symbol in scheme: {level.symbol!r}")
+        symbol_map[key] = index
+    return symbol_map
+
+
+def accent_from_char(ch: str, symbol_map: Dict[str, int]) -> int:
+    try:
+        return symbol_map[ch.lower()]
+    except KeyError as exc:
+        raise ValueError(f"invalid ADT data symbol for selected accent scheme: {ch!r}") from exc
+
+
+def load_accent_levels(path: Path, scheme_name: str = "6-accent") -> Dict[int, AccentLevel]:
+    """Load accent labels, symbols, and RGB colors from accent_levels.json."""
+    try:
+        root = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"accent-level definition not found: {path}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read accent-level definition {path}: {exc}") from exc
+
+    schemes = root.get("schemes") if isinstance(root, dict) else None
+    raw_scheme = schemes.get(scheme_name) if isinstance(schemes, dict) else None
+    raw_levels = raw_scheme.get("levels") if isinstance(raw_scheme, dict) else None
+    if not isinstance(raw_levels, list) or not raw_levels:
+        raise ValueError(f"accent scheme {scheme_name!r} has no levels in {path}")
+
+    levels: Dict[int, AccentLevel] = {}
+    for raw in raw_levels:
+        if not isinstance(raw, dict):
+            raise ValueError(f"accent scheme {scheme_name}: every level must be an object")
+        index = raw.get("index")
+        name = raw.get("name")
+        label = raw.get("label", name)
+        min_velocity = raw.get("min_velocity")
+        max_velocity = raw.get("max_velocity")
+        representative_velocity = raw.get("representative_velocity")
+        symbol = raw.get("symbol")
+        color = raw.get("color")
+        if not isinstance(index, int) or index < 0 or index in levels:
+            raise ValueError(f"accent scheme {scheme_name}: invalid or duplicate index {index!r}")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"accent scheme {scheme_name}, index {index}: invalid name")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"accent scheme {scheme_name}, index {index}: invalid label")
+        if not isinstance(min_velocity, int) or not 0 <= min_velocity <= 127:
+            raise ValueError(f"accent scheme {scheme_name}, index {index}: invalid min_velocity")
+        if not isinstance(max_velocity, int) or not min_velocity <= max_velocity <= 127:
+            raise ValueError(f"accent scheme {scheme_name}, index {index}: invalid max_velocity")
+        if (not isinstance(representative_velocity, int) or
+                not min_velocity <= representative_velocity <= max_velocity):
+            raise ValueError(f"accent scheme {scheme_name}, index {index}: invalid representative_velocity")
+        if not isinstance(symbol, str) or len(symbol) != 1:
+            raise ValueError(f"accent scheme {scheme_name}, index {index}: symbol must be one character")
+        if (not isinstance(color, list) or len(color) != 3 or
+                any(not isinstance(v, int) or not 0 <= v <= 255 for v in color)):
+            raise ValueError(f"accent scheme {scheme_name}, index {index}: color must be [R,G,B]")
+        levels[index] = AccentLevel(
+            index, name.strip(), label.strip(), min_velocity, max_velocity,
+            representative_velocity, symbol, tuple(color)
+        )
+
+    expected = set(range(6)) if scheme_name == "6-accent" else set(range(max(levels) + 1))
+    missing = sorted(expected - set(levels))
+    if missing:
+        raise ValueError(f"accent scheme {scheme_name}: required indices missing: {missing}")
+    return levels
+
+
+def rgb_css(color: Tuple[int, int, int]) -> str:
+    return f"rgb({color[0]}, {color[1]}, {color[2]})"
 
 
 def load_slot_maps(path: Path) -> Tuple[Dict[str, SlotMapDefinition], Dict[int, SlotMapDefinition]]:
@@ -191,7 +273,7 @@ def parse_inline_slot(value: str, index: int) -> SlotDefinition:
     return SlotDefinition(index, abbrev, (match.group(3) or abbrev).strip(), note, (note,))
 
 
-def parse_adt_v23(path: Path, by_name: Dict[str, SlotMapDefinition]) -> Pattern:
+def parse_adt_v23(path: Path, by_name: Dict[str, SlotMapDefinition], symbol_map: Dict[str, int]) -> Pattern:
     raw_lines = path.read_text(encoding="utf-8-sig").splitlines()
     if not raw_lines or raw_lines[0].strip() != ADT_VERSION_LINE:
         raise ValueError(f"first line must be exactly {ADT_VERSION_LINE!r}")
@@ -250,13 +332,13 @@ def parse_adt_v23(path: Path, by_name: Dict[str, SlotMapDefinition]) -> Pattern:
     if orientation == "STEP":
         if len(data_lines) != length: raise ValueError(f"STEP data has {len(data_lines)} rows; LENGTH={length}")
         if any(len(row) != slot_count for row in data_lines): raise ValueError(f"every STEP row must contain {slot_count} slot characters")
-        steps = [[accent_from_char(ch) for ch in row] for row in data_lines]
+        steps = [[accent_from_char(ch, symbol_map) for ch in row] for row in data_lines]
     else:
         if len(data_lines) != slot_count: raise ValueError(f"SLOT data has {len(data_lines)} rows; slots={slot_count}")
         if any(len(row) != length for row in data_lines): raise ValueError(f"every SLOT row must contain LENGTH={length} characters")
         steps = [[0] * slot_count for _ in range(length)]
         for slot_index, row in enumerate(data_lines):
-            for step_index, ch in enumerate(row): steps[step_index][slot_index] = accent_from_char(ch)
+            for step_index, ch in enumerate(row): steps[step_index][slot_index] = accent_from_char(ch, symbol_map)
     ppqn = int(metadata.get("PPQN", str(DEFAULT_PPQN)))
     return Pattern(path, name, "ADT v2.3", length, subdiv, steps, slots, slot_map_name, slot_map_id,
                    metadata.get("TIME_SIG"), metadata.get("SOURCE"), ppqn)
@@ -270,8 +352,8 @@ def decode_payload(payload: bytes, length: int, slots: int) -> List[List[int]]:
         if offset + hit_count > len(payload): raise ValueError(f"truncated hit list at step {step_index}")
         for _ in range(hit_count):
             hit = payload[offset]; offset += 1
-            if hit & 0xC0: raise ValueError(f"step {step_index}: reserved packed-hit bits are not zero")
-            slot, accent = (hit >> 2) & 0x0F, hit & 0x03
+            if hit & 0x80: raise ValueError(f"step {step_index}: reserved packed-hit bit is not zero")
+            slot, accent = (hit >> 3) & 0x0F, hit & 0x07
             if slot >= slots: raise ValueError(f"step {step_index}: slot {slot} outside slot map ({slots})")
             if accent == 0: raise ValueError(f"step {step_index}: stored hit has accent 0")
             steps[step_index][slot] = max(steps[step_index][slot], accent)
@@ -286,7 +368,7 @@ def find_same_basename(path: Path, suffixes: Sequence[str]) -> Optional[Path]:
     return None
 
 
-def load_adp3(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition]) -> Pattern:
+def load_adp3(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition], symbol_map: Dict[str, int]) -> Pattern:
     data = path.read_bytes()
     if len(data) < ADP3_HEADER_SIZE: raise ValueError("ADP3 file is shorter than the 12-byte header")
     magic, version, subdiv_code, length, slot_map_id, payload_bytes, payload_crc = struct.unpack(ADP3_HEADER_FMT, data[:ADP3_HEADER_SIZE])
@@ -299,7 +381,7 @@ def load_adp3(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int
 
     companion = None
     companion_path = find_same_basename(path, (".ADT", ".adt"))
-    if companion_path is not None: companion = parse_adt_v23(companion_path, by_name)
+    if companion_path is not None: companion = parse_adt_v23(companion_path, by_name, symbol_map)
     if slot_map_id == INLINE_SLOT_MAP_ID:
         if companion is None: raise ValueError(f"INLINE ADP requires companion {path.stem}.ADT")
         if companion.slot_map_name != "INLINE": raise ValueError(f"companion {companion_path.name} must declare SLOT_MAP_ID=INLINE")
@@ -317,9 +399,9 @@ def load_adp3(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int
                    companion.ppqn if companion else DEFAULT_PPQN)
 
 
-def load_pattern(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition]) -> Pattern:
-    if path.suffix.lower() == ".adt": return parse_adt_v23(path, by_name)
-    if path.suffix.lower() == ".adp": return load_adp3(path, by_name, by_id)
+def load_pattern(path: Path, by_name: Dict[str, SlotMapDefinition], by_id: Dict[int, SlotMapDefinition], symbol_map: Dict[str, int]) -> Pattern:
+    if path.suffix.lower() == ".adt": return parse_adt_v23(path, by_name, symbol_map)
+    if path.suffix.lower() == ".adp": return load_adp3(path, by_name, by_id, symbol_map)
     raise ValueError("primary input must be ADT or ADP")
 
 
@@ -432,20 +514,19 @@ def parse_time_sig(value: Optional[str]) -> Optional[Tuple[int, int]]:
 
 
 def card_dimensions(pattern: Pattern) -> Tuple[int, int]:
-    return max(430, 128 + pattern.length * 21), max(290, 116 + pattern.slot_count * 20)
+    """Return a fixed compact card size for the A4 print grid."""
+    return 345, 174
 
 
 def render_card(pattern: Pattern, x: float, y: float, width: int, height: int) -> str:
-    left, top, bottom, right = 104, 64, 30, 10
+    left, top, bottom, right = 34, 38, 10, 4
     gx, gy, gw, gh = x + left, y + top, width - left - right, height - top - bottom
     cell_w, row_h = gw / pattern.length, gh / pattern.slot_count
-    p = [f'<g class="card"><rect x="{x}" y="{y}" width="{width}" height="{height}" rx="8" class="panel"/>']
-    p += [svg_text(x + 12, y + 22, pattern.name, "title"), svg_text(x + width - 12, y + 22, pattern.source_format, "format", "end")]
-    meta = f"{pattern.subdiv} · LENGTH {pattern.length} · {pattern.slot_map_name}"
-    if pattern.time_sig: meta = f"{pattern.time_sig} · " + meta
-    p += [svg_text(x + 12, y + 42, meta, "meta")]
-    hits = sum(1 for row in pattern.steps for accent in row if accent)
-    p += [svg_text(x + width - 12, y + 42, f"{hits} hits" + (f" · ORN {len(pattern.ornaments)}" if pattern.ornaments else ""), "meta", "end")]
+    p = [f'<g class="card">']
+    p += [svg_text(x + width / 2, y + 15, pattern.name, "title", "middle")]
+    meta = f"{pattern.subdiv}, {pattern.slot_map_name}"
+    if pattern.time_sig: meta = f"{pattern.time_sig}, " + meta
+    p += [svg_text(x + width / 2, y + 29, meta, "meta", "middle")]
 
     major_every = STEPS_PER_QUARTER[pattern.subdiv]
     for step in range(pattern.length + 1):
@@ -463,7 +544,8 @@ def render_card(pattern: Pattern, x: float, y: float, width: int, height: int) -
     display_slots = list(range(pattern.slot_count - 1, -1, -1)); display_row = {slot: row for row, slot in enumerate(display_slots)}
     for row, slot_index_ in enumerate(display_slots):
         slot = pattern.slots[slot_index_]; yy = gy + row * row_h
-        p += [svg_text(x + 9, yy + row_h * .68, f"{slot_index_:02d} {slot.abbrev}", "row"),
+        label = slot.abbrev[:2].upper()
+        p += [svg_text(gx - 5, yy + row_h * .68, label, "row", "end"),
               f'<line x1="{gx}" y1="{yy + row_h:.2f}" x2="{gx + gw}" y2="{yy + row_h:.2f}" class="rguide"/>']
 
     orn_map: Dict[Tuple[int, int], List[OrnamentEvent]] = {}
@@ -479,31 +561,121 @@ def render_card(pattern: Pattern, x: float, y: float, width: int, height: int) -
                 marker = max(4., min(8., cell_w * .25, row_h * .35)); details = "; ".join(
                     f"{e.kind} offset {e.offset_ticks}, velocity {e.velocity}" + (" loop-wrap" if e.loop_wrap else "") + (f", confidence {e.confidence}" if e.confidence else "") for e in events)
                 p.append(f'<rect x="{xx + 2.2:.2f}" y="{yy + 2.2:.2f}" width="{marker:.2f}" height="{marker:.2f}" rx=".7" class="ornmark"><title>{esc(details)}</title></rect>')
-    if pattern.source: p.append(svg_text(x + 10, y + height - 10, pattern.source, "footer"))
-    elif pattern.ornaments:
-        wraps = sum(1 for event in pattern.ornaments if event.loop_wrap)
-        p.append(svg_text(x + 10, y + height - 10, f"ORN events {len(pattern.ornaments)}" + (f" · loop-wrap {wraps}" if wraps else ""), "footer"))
     p.append("</g>"); return "".join(p)
 
 
-def render_html(patterns: Sequence[Pattern], title: str) -> str:
-    margin, gap_x, gap_y = 18, 18, 18; columns = 2 if len(patterns) > 1 else 1
-    sizes = [card_dimensions(p) for p in patterns]; col_widths = [0] * columns
-    for i, (w, _) in enumerate(sizes): col_widths[i % columns] = max(col_widths[i % columns], w)
-    row_heights = [max(h for _, h in sizes[start:start + columns]) for start in range(0, len(patterns), columns)]
-    xs, cursor = [], margin
-    for w in col_widths: xs.append(cursor); cursor += w + gap_x
-    ys, cursor = [], margin
-    for h in row_heights: ys.append(cursor); cursor += h + gap_y
-    svg_w = margin * 2 + sum(col_widths) + gap_x * max(0, columns - 1)
-    svg_h = margin * 2 + sum(row_heights) + gap_y * max(0, len(row_heights) - 1)
-    cards = [render_card(p, xs[i % columns], ys[i // columns], *sizes[i]) for i, p in enumerate(patterns)]
-    hit_count = sum(sum(1 for a in row if a) for p in patterns for row in p.steps)
-    orn_count = sum(len(p.ornaments) for p in patterns)
-    safe_svg_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", title) + ".svg"
-    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} — ADX Viewer</title><style>
-:root{{--bg:#f4f6f8;--panel:#fff;--ink:#17202a;--muted:#65717e;--line:#d9dee4;--major:#9aa6b2;--a1:rgb(70,130,255);--a2:rgb(55,170,95);--a3:rgb(220,55,55)}}@media(prefers-color-scheme:dark){{:root{{--bg:#11151a;--panel:#1a2027;--ink:#e6edf3;--muted:#9da9b5;--line:#303843;--major:#66717d;--a1:rgb(70,130,255);--a2:rgb(55,170,95);--a3:rgb(220,55,55)}}}}*{{box-sizing:border-box}}body{{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--ink)}}header{{position:sticky;top:0;z-index:3;padding:13px 18px;background:var(--panel);border-bottom:1px solid var(--line)}}h1{{margin:0 0 5px;font-size:20px}}.summary{{color:var(--muted);font-size:13px}}button{{margin-top:8px;padding:7px 11px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font-weight:700;cursor:pointer}}.legend{{margin-left:12px;color:var(--muted);font-size:12px}}.swatch{{display:inline-block;width:12px;height:12px;margin:0 3px 0 7px;vertical-align:-2px;border:1px solid var(--line)}}.s1{{background:var(--a1)}}.s2{{background:var(--a2)}}.s3{{background:var(--a3)}}.flam{{position:relative;background:var(--a2)}}.flam::after{{content:"";position:absolute;left:1px;top:1px;width:4px;height:4px;background:#fff}}main{{overflow:auto;padding:12px}}svg{{display:block}}.panel{{fill:var(--panel);stroke:var(--line)}}.title{{fill:var(--ink);font-size:18px;font-weight:800}}.format{{fill:var(--muted);font-size:13px;font-weight:700}}.meta,.footer{{fill:var(--muted);font-size:12px}}.row{{fill:var(--ink);font-size:11px}}.guide,.rguide{{stroke:var(--line);stroke-width:.7}}.major{{stroke:var(--major);stroke-width:1.45}}.barline{{stroke:var(--ink);stroke-width:2.1;opacity:.72}}.cell{{stroke:var(--panel);stroke-width:.35}}.accent1{{fill:var(--a1)}}.accent2{{fill:var(--a2)}}.accent3{{fill:var(--a3)}}.ornmark{{fill:#fff;stroke:#5b6470;stroke-width:.55}}@media print{{header{{position:static}}button{{display:none}}main{{padding:0}}}}
-</style></head><body><header><h1>{esc(title)} — ADX Viewer <small style="font-size:12px;color:var(--muted)">{VERSION}</small></h1><div class="summary">{len(patterns)} pattern(s) · {hit_count} hits · {orn_count} ornament event(s)</div><button id="download-svg">Download SVG</button> <button id="print">Print / PDF</button><span class="legend">Accent:<i class="swatch s1"></i>1 weak<i class="swatch s2"></i>2 medium<i class="swatch s3"></i>3 strong<i class="swatch flam"></i>flam</span></header><main><svg id="catalog" xmlns="http://www.w3.org/2000/svg" width="{svg_w}" height="{svg_h}" viewBox="0 0 {svg_w} {svg_h}">{''.join(cards)}</svg></main><script>(()=>{{const svg=document.getElementById('catalog');document.getElementById('download-svg').addEventListener('click',()=>{{const clone=svg.cloneNode(true);clone.setAttribute('xmlns','http://www.w3.org/2000/svg');const defs=document.createElementNS('http://www.w3.org/2000/svg','defs');const st=document.createElementNS('http://www.w3.org/2000/svg','style');st.textContent=document.querySelector('style').textContent;defs.appendChild(st);clone.insertBefore(defs,clone.firstChild);const blob=new Blob([new XMLSerializer().serializeToString(clone)],{{type:'image/svg+xml;charset=utf-8'}});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download={json.dumps(safe_svg_name)};document.body.appendChild(a);a.click();setTimeout(()=>{{URL.revokeObjectURL(a.href);a.remove()}},0)}});document.getElementById('print').addEventListener('click',()=>window.print())}})();</script></body></html>'''
+
+def render_accent_legend(accent_levels: Dict[int, AccentLevel], page_w: int, y: float) -> str:
+    """Render the non-rest accent levels as a compact, centered page legend."""
+    levels = [level for index, level in sorted(accent_levels.items()) if index > 0]
+    if not levels:
+        return ""
+
+    item_w = 132
+    swatch = 10
+    gap = 6
+    total_w = item_w * len(levels)
+    start_x = (page_w - total_w) / 2
+    parts = [svg_text(page_w / 2, y,
+                      "Hit strength — velocity range (representative)",
+                      "legend-title", "middle")]
+    item_y = y + 10
+    for i, level in enumerate(levels):
+        x = start_x + i * item_w
+        parts.append(
+            f'<rect x="{x:.2f}" y="{item_y - 7:.2f}" width="{swatch}" height="{swatch}" '
+            f'class="legend-swatch accent{level.index}"/>'
+        )
+        text = (f"{level.label}: {level.min_velocity}–{level.max_velocity} "
+                f"({level.representative_velocity})")
+        parts.append(svg_text(x + swatch + gap, item_y + 1, text, "legend-text"))
+    return "".join(parts)
+
+def render_html(patterns: Sequence[Pattern], title: str, accent_levels: Dict[int, AccentLevel]) -> str:
+    """Render an A4 portrait, print-first HTML document.
+
+    Each page contains ten cards arranged as two columns by five rows, closely
+    following the compact layout of the supplied reference PDF.
+    """
+    page_w, page_h = 794, 1123
+    page_margin_x = 42
+    header_y = 56
+    footer_y = page_h - 30
+    legend_y = 80
+    grid_top = 126
+    columns, rows = 2, 5
+    gap_x, gap_y = 20, 10
+    card_w, card_h = card_dimensions(patterns[0])
+    per_page = columns * rows
+    page_count = math.ceil(len(patterns) / per_page)
+
+    accent_css = "\n".join(
+        f".accent{index} {{ fill: {rgb_css(level.color)}; }}"
+        for index, level in sorted(accent_levels.items())
+        if index > 0
+    )
+
+    pages: List[str] = []
+    for page_index in range(page_count):
+        batch = patterns[page_index * per_page:(page_index + 1) * per_page]
+        page_parts = [
+            f'<section class="sheet"><svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="210mm" height="297mm" viewBox="0 0 {page_w} {page_h}">',
+            svg_text(page_w / 2, header_y, title, "page-title", "middle"),
+            render_accent_legend(accent_levels, page_w, legend_y),
+        ]
+        for i, pattern in enumerate(batch):
+            col, row = i % columns, i // columns
+            x = page_margin_x + col * (card_w + gap_x)
+            y = grid_top + row * (card_h + gap_y)
+            page_parts.append(render_card(pattern, x, y, card_w, card_h))
+        page_parts.append(svg_text(page_w / 2, footer_y,
+                                   f"Page {page_index + 1} of {page_count}",
+                                   "page-footer", "middle"))
+        page_parts.append('</svg></section>')
+        pages.append(''.join(page_parts))
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{esc(title)} - ADX Drum Viewer</title>
+<style>
+@page {{ size: A4 portrait; margin: 0; }}
+* {{ box-sizing: border-box; }}
+html, body {{ margin: 0; padding: 0; background: #d8d8d8; color: #111; }}
+body {{ font-family: Arial, Helvetica, sans-serif; }}
+.toolbar {{ position: sticky; top: 0; z-index: 5; padding: 8px 12px;
+  background: #fff; border-bottom: 1px solid #bbb; }}
+.toolbar button {{ padding: 6px 12px; font-weight: 700; cursor: pointer; }}
+.toolbar span {{ margin-left: 10px; font-size: 13px; color: #555; }}
+.sheet {{ width: 210mm; height: 297mm; margin: 10mm auto; background: #fff;
+  box-shadow: 0 2px 12px rgba(0,0,0,.25); break-after: page; page-break-after: always; }}
+.sheet:last-of-type {{ break-after: auto; page-break-after: auto; }}
+.sheet svg {{ display: block; width: 210mm; height: 297mm; }}
+.page-title {{ fill: #111; font-size: 22px; font-weight: 700; }}
+.legend-title {{ fill: #444; font-size: 7px; font-weight: 700; }}
+.legend-text {{ fill: #333; font-size: 6.5px; }}
+.legend-swatch {{ stroke: #888; stroke-width: .35; }}
+.page-footer {{ fill: #666; font-size: 8px; }}
+.title {{ fill: #222; font-size: 12px; font-weight: 400; }}
+.meta {{ fill: #333; font-size: 8px; }}
+.row {{ fill: #222; font-size: 7px; font-weight: 600; }}
+.guide, .rguide {{ stroke: #d8d8d8; stroke-width: .65; shape-rendering: crispEdges; }}
+.major {{ stroke: #9d9d9d; stroke-width: 1.1; }}
+.barline {{ stroke: #111; stroke-width: 2.4; opacity: .95; }}
+.cell {{ stroke: none; }}
+{accent_css}
+.ornmark {{ fill: #fff; stroke: #111; stroke-width: .5; }}
+@media print {{
+  html, body {{ background: #fff; }}
+  .toolbar {{ display: none; }}
+  .sheet {{ margin: 0; box-shadow: none; }}
+}}
+</style></head><body>
+<div class="toolbar"><button onclick="window.print()">Print / PDF</button>
+<span>{len(patterns)} pattern(s) - A4 portrait - 2 columns x 5 rows</span></div>
+{''.join(pages)}
+</body></html>"""
 
 
 def default_output(tokens: Sequence[str], primary_paths: Sequence[Path]) -> Path:
@@ -518,6 +690,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("inputs", nargs="+", help="ADT/ADP/ORN files or directories; multiple values may also be comma-separated")
     parser.add_argument("-o", "--output", type=Path, help="output HTML path")
     parser.add_argument("--slot-maps", type=Path, help="slot_map_definitions.json (default: beside this script)")
+    parser.add_argument("--accent-levels", type=Path, help="accent_levels.json (default: beside this script)")
+    parser.add_argument("--accent-scheme", default="6-accent", help="scheme name in accent_levels.json (default: 6-accent)")
     parser.add_argument("--recursive", action="store_true", help="scan input directories recursively")
     parser.add_argument("--strict", action="store_true", help="stop on the first invalid pattern instead of skipping it")
     parser.add_argument("--version", action="version", version=VERSION_TEXT)
@@ -527,16 +701,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv); tokens = split_input_tokens(args.inputs)
     if not tokens: print("[ERROR] no input was provided", file=sys.stderr); return 2
-    slot_map_path = args.slot_maps or Path(__file__).with_name("slot_map_definitions.json")
+    script_dir = Path(__file__).resolve().parent
+    slot_map_path = args.slot_maps or script_dir / "slot_map_definitions.json"
+    accent_levels_path = args.accent_levels or script_dir / "accent_levels.json"
     try:
-        by_name, by_id = load_slot_maps(slot_map_path); primary_paths = collect_primary_paths(tokens, args.recursive)
+        by_name, by_id = load_slot_maps(slot_map_path)
+        accent_levels = load_accent_levels(accent_levels_path, args.accent_scheme)
+        symbol_map = build_symbol_map(accent_levels)
+        primary_paths = collect_primary_paths(tokens, args.recursive)
     except ValueError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr); return 2
     if not primary_paths: print("[ERROR] no ADT or ADP files found", file=sys.stderr); return 2
     patterns: List[Pattern] = []; skipped = 0
     for path in primary_paths:
         try:
-            pattern = load_pattern(path, by_name, by_id); orn_path = find_orn(path)
+            pattern = load_pattern(path, by_name, by_id, symbol_map); orn_path = find_orn(path)
             if orn_path is not None: pattern.ornaments = load_orn(orn_path, pattern)
             patterns.append(pattern); print(f"[OK] {path}" + (f" + {orn_path.name}" if orn_path else ""))
         except (OSError, ValueError, struct.error) as exc:
@@ -545,8 +724,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not patterns: print("[ERROR] no valid patterns to render", file=sys.stderr); return 1
     output = args.output or default_output(tokens, primary_paths); output.parent.mkdir(parents=True, exist_ok=True)
     title = patterns[0].name if len(patterns) == 1 else "ADX Pattern Catalog"
-    output.write_text(render_html(patterns, title), encoding="utf-8")
-    print(VERSION_TEXT); print(f"[DONE] output={output}"); print(f"[DONE] rendered={len(patterns)}, skipped={skipped}")
+    output.write_text(render_html(patterns, title, accent_levels), encoding="utf-8")
+    print(VERSION_TEXT); print(f"[DONE] output={output}")
+    print(f"[DONE] accent_levels={accent_levels_path} ({args.accent_scheme})")
+    print(f"[DONE] rendered={len(patterns)}, skipped={skipped}")
     return 0 if skipped == 0 else 1
 
 
