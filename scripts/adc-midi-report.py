@@ -40,7 +40,7 @@ from adc_rhythm_analysis import analyze_midi_rhythm, recommended_steps_per_bar
 
 
 SCRIPT_NAME = "adc-midi-report.py"
-VERSION = "260805c"
+VERSION = "260806c"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 DRUM_CHANNEL = 9  # MIDI channel 10, zero-based

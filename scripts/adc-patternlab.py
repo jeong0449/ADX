@@ -17,7 +17,7 @@ from adc_rhythm_analysis import (
     SUPPORTED_RESOLUTIONS, analyze_event_rhythm, detect_flams,
 )
 
-SCRIPT_NAME="adc-patternlab.py"; VERSION="260806b"; VERSION_TEXT=f"{SCRIPT_NAME} {VERSION}"
+SCRIPT_NAME="adc-patternlab.py"; VERSION="260806c"; VERSION_TEXT=f"{SCRIPT_NAME} {VERSION}"
 GHOST_CANDIDATE_MAX_VELOCITY=30
 if tuple(SUPPORTED_RESOLUTIONS) != ("16", "32", "8T", "16T"):
     raise RuntimeError(
@@ -446,15 +446,16 @@ def card(b,x,y,w=430,h=470,path=None):
         p.append(f'<line x1="{xx:.2f}" y1="{gy-4}" x2="{xx:.2f}" y2="{gy+gh}" class="barline"/>')
     p.append(f'<line x1="{gx+gw:.2f}" y1="{gy-4}" x2="{gx+gw:.2f}" y2="{gy+gh}" class="barline"/>')
 
-    flam_analysis=detect_flams(b.events,b.subdiv.get("tpq",1),loop_ticks=b.end-b.start,loop_start=b.start)
+    flam_analysis=detect_flams(b.events,b.subdiv.get("tpq",1),loop_ticks=b.end-b.start,loop_start=b.start,selected_resolution=b.subdiv.get("resolution"))
     excluded_grace_ids={id(b.events[int(item["grace_index"])]) for item in flam_analysis["flams"] if item.get("remove_from_subdivision") and "grace_index" in item}
-    pair_role={}; pair_delta={}; pair_confidence={}; grace_remove={}
+    pair_role={}; pair_delta={}; pair_confidence={}; grace_remove={}; pair_grid_preserved={}
     for item in flam_analysis["flams"]:
         grace=b.events[item["grace_index"]]; main=b.events[item["main_index"]]; delta=item["gap_ticks"]
         pair_role[id(grace)]="grace"; pair_role[id(main)]="main"
         pair_delta[id(grace)]=pair_delta[id(main)]=delta
         pair_confidence[id(grace)]=pair_confidence[id(main)]=item["confidence"]
         grace_remove[id(grace)]=bool(item.get("remove_from_subdivision"))
+        pair_grid_preserved[id(grace)]=pair_grid_preserved[id(main)]=bool(item.get("grid_preserved"))
     flam_threshold=flam_analysis["settings"].get("flam_max_gap_ticks",0)
 
     p.append('<g class="raw">'); rh=gh/len(raw); rmap={n:i for i,n in enumerate(raw)}
@@ -472,18 +473,24 @@ def card(b,x,y,w=430,h=470,path=None):
             classes.append("ghost")
             orn_reasons.append(f"ghost candidate: velocity {e.vel} <= {GHOST_CANDIDATE_MAX_VELOCITY}")
         if role=="grace":
-            classes.append("flamgrace")
-            remove_text="yes" if grace_remove.get(id(e),False) else "no"
-            orn_reasons.append(
-                f"flam grace: confidence {pair_confidence[id(e)]}, "
-                f"gap {pair_delta[id(e)]} ticks <= threshold {flam_threshold}; "
-                f"remove from subdivision: {remove_text}"
-            )
-        if role=="main":classes.append("flammain")
+            if pair_grid_preserved.get(id(e),False):
+                role="grid-hit"
+            else:
+                classes.append("flamgrace")
+                remove_text="yes" if grace_remove.get(id(e),False) else "no"
+                orn_reasons.append(
+                    f"flam grace: confidence {pair_confidence[id(e)]}, "
+                    f"gap {pair_delta[id(e)]} ticks <= threshold {flam_threshold}; "
+                    f"remove from subdivision: {remove_text}"
+                )
+        if role=="main" and not pair_grid_preserved.get(id(e),False):classes.append("flammain")
         if orn_reasons:classes.append("ornnote")
         labels=[]
         if ghost_candidate:labels.append("ghost candidate")
-        if role:labels.append(f"flam candidate ({role}, {pair_confidence[id(e)]}, delta {pair_delta[id(e)]} ticks, threshold {flam_threshold})")
+        if pair_grid_preserved.get(id(e),False):
+            labels.append(f"regular straight-32 grid hit; flam-like pair preserved, delta {pair_delta[id(e)]} ticks")
+        elif role:
+            labels.append(f"flam candidate ({role}, {pair_confidence[id(e)]}, delta {pair_delta[id(e)]} ticks, threshold {flam_threshold})")
         if orn_reasons:labels.append("ORN reason: "+" | ".join(orn_reasons))
         extra=("; "+"; ".join(labels)) if labels else ""
         actual_duration_width=max(0.0,e.dur/duration*gw)
@@ -563,7 +570,14 @@ def card_controls(path, b, x, y, w=430, disabled=False):
     export_checked=(not disabled and b.duplicate_of is None)
     orn_candidate=(
         any(e.vel<=GHOST_CANDIDATE_MAX_VELOCITY for e in b.events)
-        or bool(detect_flams(b.events,b.subdiv.get("tpq",1),loop_ticks=b.end-b.start,loop_start=b.start)["flams"])
+        or any(
+            item.get("remove_from_subdivision")
+            for item in detect_flams(
+                b.events,b.subdiv.get("tpq",1),
+                loop_ticks=b.end-b.start,loop_start=b.start,
+                selected_resolution=b.subdiv.get("resolution"),
+            )["flams"]
+        )
     )
     dis=' disabled' if disabled else ''
     checked_export=' checked' if export_checked else ''
@@ -614,7 +628,7 @@ def render(path,mid,bars_,bb,skipped_leading_bars=0):
     for b in bb:
         if b.ending_hit or b.duplicate_of is not None:
             continue
-        flam_analysis=detect_flams(b.events,b.subdiv.get("tpq",1),loop_ticks=b.end-b.start,loop_start=b.start)
+        flam_analysis=detect_flams(b.events,b.subdiv.get("tpq",1),loop_ticks=b.end-b.start,loop_start=b.start,selected_resolution=b.subdiv.get("resolution"))
         excluded=set()
         for item in flam_analysis.get("flams",[]):
             if item.get("remove_from_subdivision") and "grace_index" in item:
