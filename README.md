@@ -91,3 +91,17 @@ The original books remain valuable references and can still be found through var
 ADX Drum builds upon this legacy by transforming Standard MIDI drum performances into reusable, exchangeable, and playable drum patterns for modern software and embedded systems.
 
 Today, ADX Drum enables anyone to create, analyze, exchange, and share drum patterns beyond the original reference collections, whether authored from scratch or derived from Standard MIDI drum performances.
+
+---
+
+## Source Notes
+
+During the development of ADX Drum, several observations were made regarding the historical reference materials that are widely circulated on the Internet.
+
+A PDF commonly distributed under the title **200 Drum Machine Patterns** was found to contain only the cover page and table of contents from René-Pierre Bardet's book. The remainder of the document consists of **Ray F. Badness's _Drum Programming: A Complete Guide to Program and Think Like a Drummer_**. Whether this resulted from an editorial mistake or from the way the PDF was originally assembled could not be determined. Regardless of its origin, the same mixed document appears to have been widely redistributed over the years.
+
+Despite this apparent confusion, Badness's book is itself an excellent reference. Although written primarily for drum programming rather than traditional drumming, it provides many practical insights into constructing convincing drum machine patterns and remains valuable reading for musicians and programmers alike.
+
+Another interesting observation concerns the GM MIDI files distributed through the Cakewalk forum. Files whose names begin with **6** correspond closely to the patterns published in Bardet's **260 Drum Machine Patterns**. In contrast, the original printed source corresponding to the files whose names begin with **2** could not be identified during the development of ADX Drum. They do not correspond directly to the patterns presented in Badness's book either.
+
+For this reason, ADX Drum treats these MIDI files as **historical reference material** rather than assuming that their numbering faithfully reproduces any particular printed edition. Pattern identifiers within the ADX library are therefore assigned independently, while preserving available source information as metadata whenever possible.
