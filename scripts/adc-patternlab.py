@@ -13,10 +13,17 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 from mido import Message, MetaMessage, MidiFile
 
-from adc_rhythm_analysis import analyze_event_rhythm, detect_flams
+from adc_rhythm_analysis import (
+    SUPPORTED_RESOLUTIONS, analyze_event_rhythm, detect_flams,
+)
 
-SCRIPT_NAME="adc-patternlab.py"; VERSION="260804f"; VERSION_TEXT=f"{SCRIPT_NAME} {VERSION}"
+SCRIPT_NAME="adc-patternlab.py"; VERSION="260806b"; VERSION_TEXT=f"{SCRIPT_NAME} {VERSION}"
 GHOST_CANDIDATE_MAX_VELOCITY=30
+if tuple(SUPPORTED_RESOLUTIONS) != ("16", "32", "8T", "16T"):
+    raise RuntimeError(
+        "Straight-32 capable adc_rhythm_analysis.py is required in the same directory "
+        "(supported resolutions must be 16, 32, 8T, 16T)."
+    )
 GM={35:"Acoustic Bass Drum",36:"Bass Drum 1",37:"Side Stick",38:"Acoustic Snare",39:"Hand Clap",40:"Electric Snare",41:"Low Floor Tom",42:"Closed Hi-Hat",43:"High Floor Tom",44:"Pedal Hi-Hat",45:"Low Tom",46:"Open Hi-Hat",47:"Low-Mid Tom",48:"Hi-Mid Tom",49:"Crash Cymbal 1",50:"High Tom",51:"Ride Cymbal 1",52:"Chinese Cymbal",53:"Ride Bell",54:"Tambourine",55:"Splash Cymbal",56:"Cowbell",57:"Crash Cymbal 2",58:"Vibraslap",59:"Ride Cymbal 2",60:"Hi Bongo",61:"Low Bongo",62:"Mute Hi Conga",63:"Open Hi Conga",64:"Low Conga",65:"High Timbale",66:"Low Timbale",67:"High Agogo",68:"Low Agogo",69:"Cabasa",70:"Maracas",71:"Short Whistle",72:"Long Whistle",73:"Short Guiro",74:"Long Guiro",75:"Claves",76:"Hi Wood Block",77:"Low Wood Block",78:"Mute Cuica",79:"Open Cuica",80:"Mute Triangle",81:"Open Triangle"}
 GENRES=(
     ("RCK","Rock"),("BNV","Bossa Nova"),("FNK","Funk"),("JZZ","Jazz"),
@@ -363,7 +370,7 @@ def raw_grid_fit(block, subdiv: str) -> dict:
     the nearest grid line is at most 5% of one subdivision step.  Mean error is
     retained in ticks for the tooltip and tie-breaking.
     """
-    cells_per_beat={"16":4,"8T":3,"16T":6}[subdiv]
+    cells_per_beat={"16":4,"32":8,"8T":3,"16T":6}[subdiv]
     duration=max(1,block.end-block.start)
     tpq=max(1,int(block.subdiv.get("tpq",1)))
     beats=duration/tpq
@@ -390,10 +397,10 @@ def raw_grid_fit(block, subdiv: str) -> dict:
 
 
 def raw_grid_fit_summary(block) -> dict:
-    stats={subdiv:raw_grid_fit(block,subdiv) for subdiv in ("16","8T","16T")}
+    stats={subdiv:raw_grid_fit(block,subdiv) for subdiv in ("16","32","8T","16T")}
     # Prefer the highest aligned percentage; break ties with the smaller mean
     # normalized error, then the less finely divided grid.
-    order={"16":0,"8T":1,"16T":2}
+    order={"16":0,"8T":1,"32":2,"16T":3}
     best=max(
         stats,
         key=lambda key:(
@@ -408,10 +415,10 @@ def card(b,x,y,w=430,h=470,path=None):
     beats=max(1.0,(b.end-b.start)/max(1,b.subdiv.get("tpq",1)))
     detected=b.subdiv.get("subdivision","unknown")
     initial_subdiv={
-        "straight-16":"16","triplet-8":"8T","triplet-8T":"8T",
+        "straight-16":"16","straight-32":"32","triplet-8":"8T","triplet-8T":"8T",
         "triplet-16":"16T","triplet-16T":"16T",
     }.get(detected,"16")
-    subdivision_cells={"16":4,"8T":3,"16T":6}
+    subdivision_cells={"16":4,"32":8,"8T":3,"16T":6}
     hh,fh,lw=58,28,96; plot_h=260; gx,gy=x+lw,y+hh; gw,gh=w-lw-8,plot_h-hh-fh
     raw=sorted({e.note for e in b.events},reverse=True) or [36]
     slots=list(range(len(b.smap.slots)-1,-1,-1)); p=[]
@@ -519,6 +526,7 @@ def select_options(items, selected):
 
 SUBDIVISIONS = [
     ("16", "16"),
+    ("32", "32"),
     ("8T", "8T"),
     ("16T", "16T"),
 ]
@@ -528,7 +536,7 @@ def card_controls(path, b, x, y, w=430, disabled=False):
     fit=raw_grid_fit_summary(b)
     fit_stats=fit["stats"]
     fit_items=[]
-    for key in ("16","8T","16T"):
+    for key in ("16","32","8T","16T"):
         item=fit_stats[key]
         fit_items.append(
             f'<span class="fit-item" data-subdiv="{key}" '
@@ -545,6 +553,7 @@ def card_controls(path, b, x, y, w=430, disabled=False):
     detected=b.subdiv.get("subdivision", "unknown")
     display_detected={
         "straight-16":"16",
+        "straight-32":"32",
         "triplet-8":"8T",
         "triplet-8T":"8T",
         "triplet-16":"16T",
@@ -627,7 +636,7 @@ def render(path,mid,bars_,bb,skipped_leading_bars=0):
 <div class="header-top"><div class="brand"><h1>{html.escape(path.name)}</h1><div class="brand-sub">ADC PatternLab · {VERSION}</div></div><div class="header-state"><span id="current-pattern">Viewing: —</span><strong id="mode" class="mode-badge">RAW GM NOTES</strong></div></div>
 <div class="summary" title="{header_summary}">{header_summary}</div>
 <div class="header-actions"><div class="tabs"><button class="tab-button active" data-tab="analysis" type="button">Pattern Analysis</button><button class="tab-button" data-tab="midi" type="button">MIDI Files</button></div><div class="action-buttons"><button id="toggle">RAW / QUANTIZED</button><button id="slot-display" type="button" class="quantized-only">Velocity / Accent</button><button id="download-csv" type="button">Download CSV</button><span id="number-status"></span></div><div class="service-area"><span id="service-dot" class="service-dot"></span><span id="service-text" class="service-text">Checking playback service…</span><details class="legend-panel"><summary>Legend ▾</summary><div class="legend-content"><div>Velocity: <i class="lg v0"></i>0 (1–31) <i class="lg v1"></i>1 (32–63) <i class="lg v2"></i>2 (64–95) <i class="lg v3"></i>3 (96–127)</div><div>ADX Accent: <i class="lg h0"></i>Weak (1–60) <i class="lg h1"></i>Medium (61–100) <i class="lg h2"></i>Strong (101–127)</div><div>RAW grid: <i class="lg" style="background:#2563eb"></i>aligned <i class="lg" style="background:#0891b2"></i>near <i class="lg" style="background:#f59e0b"></i>moderate <i class="lg" style="background:#dc2626"></i>far</div><div>RAW: <i class="lg" style="background:#7c3aed;border-color:#4c1d95"></i>ORN candidate · red label = outside SLOT_MAP</div></div></details></div></div>
-</header><section id="tab-analysis" class="tab-panel active"><main><svg id="matrix" xmlns="http://www.w3.org/2000/svg" width="{sw}" height="{sh}" viewBox="0 0 {sw} {sh}">{''.join(body)}</svg></main><details><summary>Analysis notes</summary><p>Each block is checked only against earlier blocks in the same MIDI file. Pattern identity uses only relative onset tick and raw MIDI note. Velocity and note duration are ignored. A repeated block keeps its original Pattern number and omits the matrix drawing.</p><p>A final odd bar containing only one onset group at its beginning is labeled ENDING HIT and excluded from the pattern catalog.</p><p>Each card initially uses the automatically detected subdivision. Its own Subdivision selector can immediately switch the reference grid and SLOT quantization among 16, 8T, and 16T without affecting other cards. Reloading the HTML restores the original automatic selections. Grid fit is a separate visual diagnostic: for each candidate grid it reports the percentage of RAW note-on events that fall within 5% of one grid step from the nearest line. Best marks the highest such percentage, with mean normalized error used only to break ties. It does not overwrite the shared rhythm-analysis decision.</p><p>If no SLOT_MAP covers every note, the nearest map is used, the card receives a red border, and uncovered MIDI notes are listed as MISSING NOTES. Ties fall back conservatively toward lower IDs, beginning with LEGACY 12.</p><p>RAW view places every note-on circle at its original MIDI tick position and extends a horizontal line to the recorded note-off position. Very short durations receive a two-pixel minimum display line; the note-on position itself is never moved. The vertical subdivision lines are reference overlays only; changing a card’s Subdivision selector never moves RAW notes. Velocity controls circle size. RAW note colors indicate distance from the nearest line of the currently selected subdivision and are recalculated independently for each card whenever its Subdivision selector changes. Notes that currently trigger automatic ORN candidacy are shown in purple, overriding deviation color: velocity ≤ 30 ghost candidates and the grace note of each detected flam pair. Hovering a purple note shows the exact reason, including velocity threshold or flam confidence, tick gap, threshold, and whether the grace is removed from subdivision. Flam main hits remain blue because they stay in the ADX grid.</p><p>The report has two tabs: Pattern Analysis and Local MIDI Files. The MIDI Files tab obtains a restricted list of immediate, non-symlink MID files from the local playback service. The browser receives opaque IDs rather than filesystem paths and plays selected files through the configured FluidSynth/SF2 backend. In SLOT view, each retained hit fills its complete quantized cell. The Play button sends the MIDI generated from the current Compare Mode directly to the local PatternLab playback service, which uses the configured FluidSynth executable and SF2 SoundFont. The QUANTIZED display button switches between the original four-band MIDI Velocity view and the ADX Accent preview. Each non-duplicate card can play or download exactly the sequence selected in Compare Mode: RAW only, RAW → 6, RAW → 4, or RAW → 6 → 4. Every included section is repeated twice, and adjacent sections are separated by one quarter-note beat. ADX Accent shows three hit strengths: Weak Hit (velocity 1–60), Medium Hit (61–100), and Strong Hit (101–127). An empty cell already represents no hit, and every positive velocity remains visible as one of the three hit strengths. Flam grace notes marked for removal from subdivision are intentionally omitted there and belong to ORN; the main hit remains in the grid. Ghost candidates that are not classified as removable flam grace notes remain visible. When multiple retained raw hits collapse into one slot/cell, the strongest velocity is shown.</p><p>SLOT_MAP usage: <code>{html.escape(json.dumps(summary,ensure_ascii=False))}</code></p><p>The shared adc_rhythm_analysis module owns the complete subdivision decision: flam detection, grace-note exclusion, onset phase, note-duration evidence, and conservative filename hints. The same flam-filtered events are used for both phase and duration scoring. Beat anchors and the shared half-beat remain excluded from phase evidence.</p></details></section><section id="tab-midi" class="tab-panel"><div class="midi-browser"><div class="midi-toolbar"><div><h2>Local MIDI Files</h2><div class="midi-meta">Allowed local MIDI directory · paths are not exposed to the browser</div></div><button id="refresh-midi" type="button">Refresh</button></div><div id="midi-list" class="midi-list"><div class="empty-message">Open this tab to load the MIDI file list.</div></div><div class="library-player"><div class="library-now"><strong id="library-file">Nothing playing</strong><span id="library-time">0:00 / 0:00</span></div><div class="library-progress"><span id="library-progress-fill"></span></div><div class="library-controls"><button id="library-stop" type="button">■ Stop</button></div></div></div></section><script>(()=>{{
+</header><section id="tab-analysis" class="tab-panel active"><main><svg id="matrix" xmlns="http://www.w3.org/2000/svg" width="{sw}" height="{sh}" viewBox="0 0 {sw} {sh}">{''.join(body)}</svg></main><details><summary>Analysis notes</summary><p>Each block is checked only against earlier blocks in the same MIDI file. Pattern identity uses only relative onset tick and raw MIDI note. Velocity and note duration are ignored. A repeated block keeps its original Pattern number and omits the matrix drawing.</p><p>A final odd bar containing only one onset group at its beginning is labeled ENDING HIT and excluded from the pattern catalog.</p><p>Each card initially uses the automatically detected subdivision. Its own Subdivision selector can immediately switch the reference grid and SLOT quantization among 16, 32, 8T, and 16T without affecting other cards. Reloading the HTML restores the original automatic selections. Grid fit is a separate visual diagnostic: for each candidate grid it reports the percentage of RAW note-on events that fall within 5% of one grid step from the nearest line. Best marks the highest such percentage, with mean normalized error used only to break ties. It does not overwrite the shared rhythm-analysis decision.</p><p>If no SLOT_MAP covers every note, the nearest map is used, the card receives a red border, and uncovered MIDI notes are listed as MISSING NOTES. Ties fall back conservatively toward lower IDs, beginning with LEGACY 12.</p><p>RAW view places every note-on circle at its original MIDI tick position and extends a horizontal line to the recorded note-off position. Very short durations receive a two-pixel minimum display line; the note-on position itself is never moved. The vertical subdivision lines are reference overlays only; changing a card’s Subdivision selector never moves RAW notes. Velocity controls circle size. RAW note colors indicate distance from the nearest line of the currently selected subdivision and are recalculated independently for each card whenever its Subdivision selector changes. Notes that currently trigger automatic ORN candidacy are shown in purple, overriding deviation color: velocity ≤ 30 ghost candidates and the grace note of each detected flam pair. Hovering a purple note shows the exact reason, including velocity threshold or flam confidence, tick gap, threshold, and whether the grace is removed from subdivision. Flam main hits remain blue because they stay in the ADX grid.</p><p>The report has two tabs: Pattern Analysis and Local MIDI Files. The MIDI Files tab obtains a restricted list of immediate, non-symlink MID files from the local playback service. The browser receives opaque IDs rather than filesystem paths and plays selected files through the configured FluidSynth/SF2 backend. In SLOT view, each retained hit fills its complete quantized cell. The Play button sends the MIDI generated from the current Compare Mode directly to the local PatternLab playback service, which uses the configured FluidSynth executable and SF2 SoundFont. The QUANTIZED display button switches between the original four-band MIDI Velocity view and the ADX Accent preview. Each non-duplicate card can play or download exactly the sequence selected in Compare Mode: RAW only, RAW → 6, RAW → 4, or RAW → 6 → 4. Every included section is repeated twice, and adjacent sections are separated by one quarter-note beat. ADX Accent shows three hit strengths: Weak Hit (velocity 1–60), Medium Hit (61–100), and Strong Hit (101–127). An empty cell already represents no hit, and every positive velocity remains visible as one of the three hit strengths. Flam grace notes marked for removal from subdivision are intentionally omitted there and belong to ORN; the main hit remains in the grid. Ghost candidates that are not classified as removable flam grace notes remain visible. When multiple retained raw hits collapse into one slot/cell, the strongest velocity is shown.</p><p>SLOT_MAP usage: <code>{html.escape(json.dumps(summary,ensure_ascii=False))}</code></p><p>The shared adc_rhythm_analysis module owns the complete subdivision decision: flam detection, grace-note exclusion, onset phase, note-duration evidence, and conservative filename hints. The same flam-filtered events are used for both phase and duration scoring. Beat anchors and the shared half-beat remain excluded from phase evidence.</p></details></section><section id="tab-midi" class="tab-panel"><div class="midi-browser"><div class="midi-toolbar"><div><h2>Local MIDI Files</h2><div class="midi-meta">Allowed local MIDI directory · paths are not exposed to the browser</div></div><button id="refresh-midi" type="button">Refresh</button></div><div id="midi-list" class="midi-list"><div class="empty-message">Open this tab to load the MIDI file list.</div></div><div class="library-player"><div class="library-now"><strong id="library-file">Nothing playing</strong><span id="library-time">0:00 / 0:00</span></div><div class="library-progress"><span id="library-progress-fill"></span></div><div class="library-controls"><button id="library-stop" type="button">■ Stop</button></div></div></div></section><script>(()=>{{
 const s=document.getElementById('matrix'),m=document.getElementById('mode'),slotDisplay=document.getElementById('slot-display');slotDisplay.style.display='none';
 const BLOCK_DATA={block_data_json};
 const ACCENT_SCHEMES={accent_levels_json};
@@ -670,7 +679,7 @@ function quantizedVelocity(v,schemeName){{
 }}
 function slotForNote(slots,note){{for(let i=0;i<slots.length;i++)if(slots[i].notes.includes(note))return i;return -1}}
 function quantizedEvents(data,subdiv,levels){{
-  const cpb={{'16':4,'8T':3,'16T':6}}[subdiv]||4;
+  const cpb={{'16':4,'32':8,'8T':3,'16T':6}}[subdiv]||4;
   const stepTicks=TPQ/cpb;
   const maxCell=Math.max(0,Math.ceil(data.duration/stepTicks)-1);
   const cells=new Map();
@@ -912,7 +921,7 @@ function calculateNames(showAlert=false){{
   return errors.length===0;
 }}
 function updateRawDeviation(card, selected){{
-  const cellsPerBeat={{'16':4,'8T':3,'16T':6}}[selected]||4;
+  const cellsPerBeat={{'16':4,'32':8,'8T':3,'16T':6}}[selected]||4;
   const duration=Number(card.dataset.durationTicks)||1;
   const beats=duration/Number({mid.ticks_per_beat});
   const cols=Math.max(1,Math.round(beats*cellsPerBeat));
@@ -934,7 +943,7 @@ function applySubdivision(panel){{
   const selected=select.value;
   card.querySelectorAll('.subdiv-layer').forEach(layer=>{{layer.classList.toggle('active',layer.dataset.subdiv===selected);}});
   const summary=card.querySelector('.grid-summary');
-  if(summary){{const cells={{'16':4,'8T':3,'16T':6}}[selected]||4;summary.textContent=(summary.dataset.prefix||'')+cells+' cells/beat';}}
+  if(summary){{const cells={{'16':4,'32':8,'8T':3,'16T':6}}[selected]||4;summary.textContent=(summary.dataset.prefix||'')+cells+' cells/beat';}}
   panel.querySelectorAll('.fit-item').forEach(item=>item.classList.toggle('selected',item.dataset.subdiv===selected));
   updateRawDeviation(card,selected);
 }}

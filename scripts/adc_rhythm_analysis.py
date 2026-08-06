@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """adc_rhythm_analysis.py 260804c
 
-Shared grace/flam/ghost and straight/8T/16T subdivision analysis for ADC Toolkit.
+Shared grace/flam/ghost and straight-16/straight-32/8T/16T subdivision analysis for ADC Toolkit.
 Used by adc-patternlab.py and adc-mid2report.py.
 
 The module analyzes MIDI data only; it does not render output or modify MIDI files.
@@ -19,8 +19,9 @@ from typing import Any, Iterable
 from mido import Message, MidiFile
 
 SCRIPT_NAME = "adc_rhythm_analysis.py"
-VERSION = "260804c"
+VERSION = "260806b"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
+SUPPORTED_RESOLUTIONS = ("16", "32", "8T", "16T")
 
 ADT_DRUM_FAMILIES = {
     35: "KK", 36: "KK", 37: "SS", 38: "SN", 40: "SN", 39: "CL",
@@ -56,15 +57,19 @@ def gather_note_on_ticks(mid: MidiFile, excluded_ticks: set[int] | None = None) 
 
 
 def classify_subdivision(tpq: int, note_ticks: Iterable[int]) -> dict:
-    """Classify straight, 8T, or 16T evidence without overcalling 16T.
+    """Classify straight-16, straight-32, 8T, or 16T phase evidence.
 
-    Beat anchors and the shared half-beat are excluded. A 16T result requires
-    dominant evidence at both exclusive 1/6 and 5/6 phases.
+    Resolution is chosen conservatively: a coarser grid wins whenever it can
+    represent all observed rhythmic positions.  Straight-32 is therefore used
+    only when at least one reliable onset occupies an odd 1/8-beat phase that
+    cannot be represented by straight-16.  Flam grace notes are removed by the
+    caller before this function is reached.
     """
     if tpq <= 0:
         tpq = 1
     tol = max(1, tpq // 24)
-    anchor = shared_half = straight = t8 = t16 = unclassified = 0
+    anchor = shared_half = straight16 = straight32_only = t8 = t16 = unclassified = 0
+    straight32_phase = [0, 0, 0, 0]
     t8_phase = [0, 0]
     t16_phase = [0, 0]
 
@@ -72,7 +77,11 @@ def classify_subdivision(tpq: int, note_ticks: Iterable[int]) -> dict:
         phase = tick % tpq
         d_anchor = min(abs(phase), abs(tpq - phase))
         d_half = abs(phase - tpq / 2)
-        d_straight = min(abs(phase - tpq / 4), abs(phase - 3 * tpq / 4))
+        d_s16 = min(abs(phase - tpq / 4), abs(phase - 3 * tpq / 4))
+        s32_targets = [tpq / 8, 3 * tpq / 8, 5 * tpq / 8, 7 * tpq / 8]
+        s32_distances = [abs(phase - target) for target in s32_targets]
+        d_s32 = min(s32_distances)
+        s32_index = s32_distances.index(d_s32)
         d8a, d8b = abs(phase - tpq / 3), abs(phase - 2 * tpq / 3)
         d16a, d16b = abs(phase - tpq / 6), abs(phase - 5 * tpq / 6)
         if d_anchor <= tol:
@@ -81,14 +90,18 @@ def classify_subdivision(tpq: int, note_ticks: Iterable[int]) -> dict:
             shared_half += 1
         else:
             distance, kind, phase_index = min(
-                [(d_straight, "straight", -1), (d8a, "8T", 0), (d8b, "8T", 1),
+                [(d_s16, "straight-16", -1), (d_s32, "straight-32", s32_index),
+                 (d8a, "8T", 0), (d8b, "8T", 1),
                  (d16a, "16T", 0), (d16b, "16T", 1)],
                 key=lambda item: item[0],
             )
             if distance > tol:
                 unclassified += 1
-            elif kind == "straight":
-                straight += 1
+            elif kind == "straight-16":
+                straight16 += 1
+            elif kind == "straight-32":
+                straight32_only += 1
+                straight32_phase[phase_index] += 1
             elif kind == "8T":
                 t8 += 1
                 t8_phase[phase_index] += 1
@@ -96,6 +109,7 @@ def classify_subdivision(tpq: int, note_ticks: Iterable[int]) -> dict:
                 t16 += 1
                 t16_phase[phase_index] += 1
 
+    straight = straight16 + straight32_only
     triplet = t8 + t16
     evidence = straight + triplet
     straight_ratio = straight / evidence if evidence else 0.0
@@ -104,7 +118,11 @@ def classify_subdivision(tpq: int, note_ticks: Iterable[int]) -> dict:
 
     if evidence:
         if straight >= 2 and straight_ratio >= 0.60:
-            grid, resolution, subdivision, rhythmic_feel = "straight", "16", "straight-16", "straight"
+            grid, rhythmic_feel = "straight", "straight"
+            if straight32_only > 0:
+                resolution, subdivision = "32", "straight-32"
+            else:
+                resolution, subdivision = "16", "straight-16"
         elif triplet >= 2 and triplet_ratio >= 0.60:
             strong_16 = (
                 t16 >= 4 and t16 / evidence >= 0.60 and
@@ -130,6 +148,9 @@ def classify_subdivision(tpq: int, note_ticks: Iterable[int]) -> dict:
         "shared_half_hits": shared_half,
         "straight": straight,
         "straight_hits": straight,
+        "straight_16_hits": straight16,
+        "straight_32_only_hits": straight32_only,
+        "straight_32_phase": straight32_phase,
         "8T": t8,
         "8T_phase": t8_phase,
         "triplet_8t_hits": t8,
@@ -155,12 +176,11 @@ def classify_subdivision(tpq: int, note_ticks: Iterable[int]) -> dict:
         "details": details,
     }
 
-
 def infer_subdivision_hint(filename: str) -> dict:
     """Return conservative filename evidence for straight/triplet resolution."""
     stem = Path(filename).stem.upper()
     compact = re.sub(r"[^A-Z0-9]+", "", stem)
-    scores = {"straight-16": 0.0, "triplet-8T": 0.0, "triplet-16T": 0.0}
+    scores = {"straight-16": 0.0, "straight-32": 0.0, "triplet-8T": 0.0, "triplet-16T": 0.0}
     reasons = []
 
     def add(kind: str, weight: float, label: str) -> None:
@@ -173,6 +193,8 @@ def infer_subdivision_hint(filename: str) -> dict:
         add("triplet-8T", 0.34, "filename:triplet-8")
     if any(x in compact for x in ("SHUFFLE", "SWING", "TRIPLET")):
         add("triplet-8T", 0.18, "filename:shuffle/swing/triplet")
+    if any(x in compact for x in ("STRAIGHT32", "32ND", "32BEAT")):
+        add("straight-32", 0.34, "filename:straight-32")
     if any(x in compact for x in ("STRAIGHT16", "16TH", "16BEAT", "STRAIGHT")):
         add("straight-16", 0.30, "filename:straight")
     return {"scores": scores, "reasons": reasons}
@@ -180,13 +202,14 @@ def infer_subdivision_hint(filename: str) -> dict:
 
 def duration_subdivision_evidence(events: Iterable[Any], tpq: int) -> dict:
     """Return weak duration evidence for already-filtered rhythmic events."""
-    scores = {"straight-16": 0.0, "triplet-8T": 0.0, "triplet-16T": 0.0}
+    scores = {"straight-16": 0.0, "straight-32": 0.0, "triplet-8T": 0.0, "triplet-16T": 0.0}
     usable = [int(_get(e, "dur", _get(e, "duration", 0))) for e in events]
     usable = [duration for duration in usable if duration > 0]
     if not usable or tpq <= 0:
         return {"scores": scores, "samples": 0}
     targets = {
         "straight-16": (tpq / 4, tpq / 2, tpq),
+        "straight-32": (tpq / 8, tpq / 4, 3 * tpq / 8, tpq / 2),
         "triplet-8T": (tpq / 3, 2 * tpq / 3),
         "triplet-16T": (tpq / 6, tpq / 3),
     }
@@ -215,6 +238,7 @@ def onset_grid_fit(note_ticks: Iterable[int], tpq: int) -> dict:
     ticks = sorted(set(int(tick) for tick in note_ticks))
     candidates = {
         "straight-16": 4,
+        "straight-32": 8,
         "triplet-8T": 3,
         "triplet-16T": 6,
     }
@@ -255,13 +279,23 @@ def _grid_fit_score(stat: dict) -> float:
 
 
 def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
-                                 filename: str = "") -> dict:
-    """Combine onset phase, duration, and filename evidence in one shared engine."""
+                                  filename: str = "") -> dict:
+    """Combine onset, duration, filename, and grid-fit evidence.
+
+    Fine resolutions are gated by exclusive phase evidence.  Thus every
+    straight-16 pattern also fits straight-32, but straight-32 is selected only
+    when an onset actually requires an odd 1/8-beat grid position.
+    """
     events = list(events)
-    scores = {"straight-16": 0.0, "triplet-8T": 0.0, "triplet-16T": 0.0}
+    scores = {"straight-16": 0.0, "straight-32": 0.0,
+              "triplet-8T": 0.0, "triplet-16T": 0.0}
     details = base.get("details", {})
     evidence = max(1, details.get("samples", 0))
-    scores["straight-16"] += 0.56 * details.get("straight_hits", 0) / evidence
+    s16_hits = details.get("straight_16_hits", details.get("straight_hits", 0))
+    s32_only = details.get("straight_32_only_hits", 0)
+    straight_hits = s16_hits + s32_only
+    scores["straight-16"] += 0.56 * s16_hits / evidence
+    scores["straight-32"] += 0.56 * straight_hits / evidence
     scores["triplet-8T"] += 0.56 * details.get("triplet_8t_hits", 0) / evidence
     scores["triplet-16T"] += 0.56 * details.get("triplet_16t_only_hits", 0) / evidence
 
@@ -270,11 +304,9 @@ def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
     for kind in scores:
         scores[kind] += _grid_fit_score(grid_fit[kind])
 
-    # A straight-8 pattern may contain only beat anchors and half-beats, leaving
-    # no exclusive 1/4 or 3/4 phase evidence.  Half-beat repetition is still
-    # positive straight-grid evidence and must not become unknown or 16T.
     if details.get("samples", 0) == 0 and details.get("shared_half_hits", 0) >= 2:
         scores["straight-16"] += 0.50
+        scores["straight-32"] += 0.50
         base = dict(base)
         base["observed_resolution"] = "8"
         base["straight_8_fallback"] = True
@@ -284,53 +316,58 @@ def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
     for kind in scores:
         scores[kind] += duration["scores"][kind] + hint["scores"][kind]
 
-    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    winner, top = ranked[0]
-    runner_kind, runner = ranked[1]
+    # Coarsest-grid rule for the straight family.
+    strong_32_identity = s32_only > 0
+    if not strong_32_identity:
+        scores["straight-32"] = min(scores["straight-32"], scores["straight-16"] - 0.001)
 
-    # 16T is accepted only when both exclusive phases (1/6 and 5/6 beat) are
-    # actually represented.  This prevents the finer 16T grid from winning
-    # merely because it also contains every 8T grid line.
     t16_phase = details.get("16T_phase", [0, 0])
     strong_16t_identity = (
         details.get("triplet_16t_only_hits", 0) >= 4
         and len(t16_phase) >= 2
         and max(t16_phase) >= 3
     )
-    if winner == "triplet-16T" and not strong_16t_identity:
-        eligible = [(kind, value) for kind, value in ranked if kind != "triplet-16T"]
-        winner, top = eligible[0]
-        runner = eligible[1][1]
+    if not strong_16t_identity:
+        scores["triplet-16T"] = min(scores["triplet-16T"], scores["triplet-8T"] - 0.001)
 
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    winner, top = ranked[0]
+    runner = ranked[1][1]
     if top < 0.28:
         final = "unknown"
     elif top - runner < 0.07:
-        final = "mixed"
+        # Nested-grid ties are resolved in favor of the coarser valid grid.
+        pair = {ranked[0][0], ranked[1][0]}
+        if pair == {"straight-16", "straight-32"}:
+            final = "straight-32" if strong_32_identity else "straight-16"
+        elif pair == {"triplet-8T", "triplet-16T"}:
+            final = "triplet-16T" if strong_16t_identity else "triplet-8T"
+        else:
+            final = "mixed"
     else:
         final = winner
 
     out = dict(base)
     out["subdivision"] = final
-    out["grid"] = "straight" if final == "straight-16" else "triplet" if final.startswith("triplet-") else final
-    out["resolution"] = "16" if final == "straight-16" else "8T" if final == "triplet-8T" else "16T" if final == "triplet-16T" else final
-    out["rhythmic_feel"] = "straight" if final == "straight-16" else "shuffle/swing" if final.startswith("triplet-") else final
+    out["grid"] = "straight" if final.startswith("straight-") else "triplet" if final.startswith("triplet-") else final
+    out["resolution"] = {"straight-16":"16", "straight-32":"32",
+                         "triplet-8T":"8T", "triplet-16T":"16T"}.get(final, final)
+    out["rhythmic_feel"] = "straight" if final.startswith("straight-") else "shuffle/swing" if final.startswith("triplet-") else final
     out["confidence"] = round((top - runner) / max(0.001, top + runner), 3)
     out["combined_scores"] = {kind: round(value, 3) for kind, value in scores.items()}
     out["grid_fit"] = {
-        kind: {
-            "aligned_ratio": round(stat["aligned_ratio"], 3),
-            "aligned_percent": round(100.0 * stat["aligned_ratio"], 1),
-            "mean_error_ticks": round(stat["mean_error_ticks"], 3),
-            "mean_error_ratio": round(stat["mean_error_ratio"], 4),
-        }
+        kind: {"aligned_ratio": round(stat["aligned_ratio"], 3),
+               "aligned_percent": round(100.0 * stat["aligned_ratio"], 1),
+               "mean_error_ticks": round(stat["mean_error_ticks"], 3),
+               "mean_error_ratio": round(stat["mean_error_ratio"], 4)}
         for kind, stat in grid_fit.items()
     }
+    out["strong_32_identity"] = strong_32_identity
     out["strong_16t_identity"] = strong_16t_identity
     out["duration_samples"] = duration["samples"]
     out["filename_hints"] = hint["reasons"]
     out["phase_subdivision"] = base.get("subdivision", "unknown")
     return out
-
 
 def analyze_event_rhythm(events: Iterable[Any], tpq: int, filename: str = "",
                          loop_ticks: int | None = None, loop_start: int | None = None) -> dict:
@@ -465,10 +502,12 @@ def recommended_steps_per_bar(numerator: int, denominator: int, decision=None) -
         steps = 12
     else:
         steps = max(8, 4 * numerator)
-    if decision and decision.get("grid") == "triplet" and (numerator, denominator) == (4, 4):
+    resolution = (decision or {}).get("resolution")
+    if resolution == "32" or (decision or {}).get("subdivision") == "straight-32":
+        steps *= 2
+    elif (decision or {}).get("grid") == "triplet" and (numerator, denominator) == (4, 4):
         steps = 24
     return int(steps)
-
 
 def collect_drum_note_events(mid: MidiFile) -> list[dict]:
     """Return channel-10 note events with absolute tick and measured duration."""
