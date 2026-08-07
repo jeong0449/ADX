@@ -5,3 +5,4 @@ numpy>=1.26
 pandas>=2.2
 matplotlib>=3.9
 svgwrite>=1.4.3
+reportlab>=5.0,<6
