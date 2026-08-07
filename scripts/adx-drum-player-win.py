@@ -11,7 +11,7 @@ Supports:
 - ADP3 SLOT_MAP_ID=255 (INLINE) via a same-basename companion ADT
 
 ADT/ADP/ORN are rendered to a temporary Standard MIDI File and played through FluidSynth.
-Standard MIDI Files are passed directly to FluidSynth.
+Standard MIDI Files are passed directly to FluidSynth unless --bpm is used; then tempo metadata is overridden in a temporary MIDI copy.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ except ImportError:
     mido = None
 
 SCRIPT_NAME = "adx-drum-player-win.py"
-VERSION = "260806a"
+VERSION = "260807a"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 ADT_VERSION_LINE = "; ADT v2.3"
@@ -724,6 +724,34 @@ def pattern_to_midi(
     return midi
 
 
+
+def midi_with_overridden_tempo(path: Path, bpm: float) -> "mido.MidiFile":
+    """Return a MIDI copy whose playback tempo is forced to one constant BPM.
+
+    Tick positions and all non-tempo events are preserved. Existing set_tempo
+    messages are replaced so later tempo changes cannot override --bpm. If the
+    file contains no tempo message, one is inserted at tick 0 of the first track.
+    """
+    if mido is None:
+        raise RuntimeError("mido is required for MIDI tempo override")
+    if bpm <= 0:
+        raise ValueError("BPM must be greater than zero")
+
+    midi = mido.MidiFile(str(path))
+    tempo = mido.bpm2tempo(bpm)
+    found_tempo = False
+    for track in midi.tracks:
+        for index, msg in enumerate(track):
+            if msg.is_meta and msg.type == "set_tempo":
+                track[index] = msg.copy(tempo=tempo)
+                found_tempo = True
+
+    if not found_tempo:
+        if not midi.tracks:
+            midi.tracks.append(mido.MidiTrack())
+        midi.tracks[0].insert(0, mido.MetaMessage("set_tempo", tempo=tempo, time=0))
+    return midi
+
 def run_fluidsynth(
     fluidsynth: Path,
     soundfont: Path,
@@ -928,7 +956,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sf2", type=existing_file, help=f"override SoundFont; default: {DEFAULT_SOUNDFONT}")
     parser.add_argument("--audio-driver", default=DEFAULT_AUDIO_DRIVER,
                         help=f"FluidSynth audio driver (default: {DEFAULT_AUDIO_DRIVER})")
-    parser.add_argument("--bpm", type=float, help="override ADT/ADP playback tempo")
+    parser.add_argument("--bpm", type=float, help="override ADT/ADP/MIDI playback tempo")
     repeat = parser.add_mutually_exclusive_group()
     repeat.add_argument("--loop", action="store_true", help="loop indefinitely until Ctrl+C")
     repeat.add_argument("--count", type=int, default=1, help="total plays (default: 1)")
@@ -973,15 +1001,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         is_midi = input_path.suffix.lower() in {".mid", ".midi"}
         if is_midi:
-            midi_path = input_path
+            if mido is None and (args.validate or args.bpm is not None):
+                raise RuntimeError("mido is required for MIDI validation or --bpm override")
             if args.validate:
-                if mido is None:
-                    raise RuntimeError("mido is required for MIDI validation")
-                mido.MidiFile(midi_path)
-                print(f"Validation: OK ({midi_path.name})")
+                mido.MidiFile(input_path)
+                print(f"Validation: OK ({input_path.name})")
                 return 0
             if args.export_midi:
                 raise ValueError("--export-midi is only needed for ADT/ADP input")
+
+            if args.bpm is None:
+                midi_path = input_path
+            else:
+                rendered = midi_with_overridden_tempo(input_path, args.bpm)
+                handle = tempfile.NamedTemporaryFile(prefix="adx_player_midi_bpm_", suffix=".mid", delete=False)
+                handle.close()
+                temporary_midi = Path(handle.name)
+                rendered.save(temporary_midi)
+                midi_path = temporary_midi
+                print(f"MIDI tempo : {args.bpm:g} BPM (override)")
         else:
             slot_map_path = resolve_definition_file(args.slot_maps, DEFAULT_SLOT_MAP_FILE)
             accent_path = resolve_definition_file(args.accent_levels, DEFAULT_ACCENT_FILE)
