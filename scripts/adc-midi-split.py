@@ -26,10 +26,7 @@ import csv
 import json
 import math
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -40,7 +37,7 @@ from mido import Message, MetaMessage, MidiFile, MidiTrack
 from adc_rhythm_analysis import detect_flams
 
 SCRIPT_NAME = "adc-midi-split.py"
-VERSION = "260806b"
+VERSION = "260807c"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 
 REQUIRED_COLUMNS = {
@@ -61,11 +58,13 @@ NAME_RE = re.compile(r"^[A-Z0-9]{3}_[0-9]{4}$")
 DEFAULT_ACCENT_SCHEME = "6-accent"
 
 try:
-    from PIL import Image, ImageDraw, ImageFont  # type: ignore
+    from reportlab.lib.colors import Color, black, white
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas as pdfcanvas
 
-    PIL_AVAILABLE = True
+    REPORTLAB_AVAILABLE = True
 except ImportError:
-    PIL_AVAILABLE = False
+    REPORTLAB_AVAILABLE = False
 
 
 @dataclass(frozen=True)
@@ -185,31 +184,6 @@ def parse_time_signature(value: str, *, row_number: int) -> Tuple[int, int]:
 
 def safe_output_stem(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._") or "patterns"
-
-
-def choose_font(size: int, bold: bool = False):
-    if not PIL_AVAILABLE:
-        return None
-    candidates = []
-    if sys.platform.startswith("win"):
-        candidates.extend(
-            [
-                r"C:\Windows\Fonts\arialbd.ttf" if bold else r"C:\Windows\Fonts\arial.ttf",
-                r"C:\Windows\Fonts\calibrib.ttf" if bold else r"C:\Windows\Fonts\calibri.ttf",
-            ]
-        )
-    candidates.extend(
-        [
-            "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
-            "Arial Bold.ttf" if bold else "Arial.ttf",
-        ]
-    )
-    for candidate in candidates:
-        try:
-            return ImageFont.truetype(candidate, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
 
 
 
@@ -667,40 +641,8 @@ def save_segment_midi(
 
 
 # ---------------------------------------------------------------------------
-# PDF rendering (Pillow + optional Ghostscript)
+# PDF rendering (ReportLab vector PDF; no Ghostscript)
 # ---------------------------------------------------------------------------
-
-
-def find_ghostscript_executable() -> Optional[str]:
-    for name in ("gswin64c", "gswin32c", "gs"):
-        path = shutil.which(name)
-        if path:
-            return path
-    return None
-
-
-def convert_pdf_to_a4_with_ghostscript(gs_exe: str, input_pdf: Path, output_pdf: Path) -> bool:
-    cmd = [
-        gs_exe,
-        "-sDEVICE=pdfwrite",
-        "-o",
-        str(output_pdf),
-        "-dDEVICEWIDTHPOINTS=595",
-        "-dDEVICEHEIGHTPOINTS=842",
-        "-dFIXEDMEDIA",
-        "-dPDFFitPage",
-        "-dNOPAUSE",
-        "-dBATCH",
-        str(input_pdf),
-    ]
-    print("[PDF] Ghostscript A4 resize:")
-    print("      " + " ".join(cmd))
-    try:
-        result = subprocess.run(cmd, check=False)
-    except OSError as exc:
-        print(f"[WARN] Ghostscript could not be started: {exc}")
-        return False
-    return result.returncode == 0 and output_pdf.exists()
 
 
 def steps_for_pattern(spec: PatternSpec, bar_count: int, numerator: int, denominator: int) -> int:
@@ -747,9 +689,6 @@ def quantized_slot_cells(
     event_cells: List[Optional[Tuple[int, int]]] = []
     rhythm_events = []
 
-    # First establish every event's quantized target and run the same shared
-    # flam analysis used by PatternLab and the ADT writer. Do not populate the
-    # PDF grid yet: removable grace notes must be excluded before quantization.
     for event in note_events:
         assert isinstance(event.message, Message)
         slot_index = slot_map.slot_for_note(int(event.message.note))
@@ -792,9 +731,6 @@ def quantized_slot_cells(
                 if cell is not None:
                     flam_cells.add(cell)
 
-    # Build the regular ADT/ADP-style PDF grid only from retained main events.
-    # A loop-boundary grace note therefore cannot be rounded and clamped into
-    # the final cell. Its target main cell receives the white flam marker.
     cells: Dict[Tuple[int, int], int] = {}
     for event_index, event in enumerate(note_events):
         if event_index in excluded_grace_indices:
@@ -809,92 +745,138 @@ def quantized_slot_cells(
     return columns, cells, flam_cells
 
 
-def render_pattern_png(
+def _set_rgb(c: "pdfcanvas.Canvas", rgb: Tuple[int, int, int], *, stroke: bool = False) -> None:
+    values = tuple(value / 255.0 for value in rgb)
+    if stroke:
+        c.setStrokeColorRGB(*values)
+    else:
+        c.setFillColorRGB(*values)
+
+
+def _draw_centered_text(c: "pdfcanvas.Canvas", x: float, y: float, text: str,
+                        font: str, size: float) -> None:
+    c.setFont(font, size)
+    c.setFillColor(black)
+    c.drawCentredString(x, y, text)
+
+
+def draw_pattern_card_pdf(
+    c: "pdfcanvas.Canvas",
     spec: PatternSpec,
     slot_map: SlotMapDefinition,
     bars: Sequence[BarInfo],
     events: Sequence[AbsoluteEvent],
-    output_path: Path,
     tpq: int,
     accent_scheme: AccentScheme,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
 ) -> None:
-    if not PIL_AVAILABLE:
-        fail("Pillow is required for --pdf (pip install Pillow)")
-
+    """Draw one pattern directly as vector PDF graphics."""
     first_bar = bars[spec.start_bar - 1]
     bar_count = spec.end_bar - spec.start_bar + 1
-    columns, cells, flam_cells = quantized_slot_cells(spec, slot_map, bars, events, tpq, accent_scheme)
+    columns, cells, flam_cells = quantized_slot_cells(
+        spec, slot_map, bars, events, tpq, accent_scheme
+    )
     row_slots = list(reversed(slot_map.slots))
     rows = len(row_slots)
 
-    cell_w = 10
-    cell_h = 10
-    left_margin = 44
-    right_margin = 8
-    top_margin = 32
-    bottom_margin = 8
-    width = left_margin + columns * cell_w + right_margin
-    height = top_margin + rows * cell_h + bottom_margin
+    left = 27.0
+    right = 3.0
+    top = 27.0
+    bottom = 5.0
+    gx = x + left
+    gy = y + bottom
+    gw = width - left - right
+    gh = height - top - bottom
+    cell_w = gw / columns
+    cell_h = gh / rows
 
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
-    title_font = choose_font(15, bold=False)
-    label_font = choose_font(10, bold=False)
-
-    title_parts = [spec.name, f"bars {spec.start_bar}-{spec.end_bar}", spec.subdiv, spec.slot_map]
+    _draw_centered_text(c, x + width / 2, y + height - 11, spec.name, "Helvetica", 8.2)
+    meta = f"{spec.time_sig}, {spec.subdiv}, {spec.slot_map}"
     if spec.orn:
-        title_parts.append("ORN")
-    title = f"{title_parts[0]} ({', '.join(title_parts[1:])})"
-    bbox = draw.textbbox((0, 0), title, font=title_font)
-    draw.text(((width - (bbox[2] - bbox[0])) / 2, 5), title, fill="black", font=title_font)
+        meta += ", ORN"
+    _draw_centered_text(c, x + width / 2, y + height - 21, meta, "Helvetica", 5.8)
 
-    gx, gy = left_margin, top_margin
     quarter_notes_per_bar = first_bar.numerator * 4 / first_bar.denominator
     cells_per_quarter = {"16": 4, "32": 8, "8T": 3, "16T": 6}[spec.subdiv]
     steps_per_bar = int(round(quarter_notes_per_bar * cells_per_quarter))
 
+    # Vertical guides: subdivision, beat, bar, and central two-bar boundary.
     for col in range(columns + 1):
-        x = gx + col * cell_w
+        xx = gx + col * cell_w
         is_bar = 0 < col < columns and col % steps_per_bar == 0
+        is_mid_boundary = bar_count == 2 and col == steps_per_bar
         is_beat = col % cells_per_quarter == 0
-        if is_bar:
-            color, line_width = "black", 3
+        if is_mid_boundary:
+            c.setStrokeColor(black)
+            c.setLineWidth(1.8)
+        elif is_bar:
+            c.setStrokeColor(black)
+            c.setLineWidth(1.2)
         elif is_beat:
-            color, line_width = (90, 90, 90), 1
+            c.setStrokeColorRGB(0.45, 0.45, 0.45)
+            c.setLineWidth(0.45)
         else:
-            color, line_width = (220, 220, 220), 1
-        draw.line((x, gy, x, gy + rows * cell_h), fill=color, width=line_width)
+            c.setStrokeColorRGB(0.84, 0.84, 0.84)
+            c.setLineWidth(0.25)
+        c.line(xx, gy, xx, gy + gh)
 
-    for row in range(rows + 1):
-        y = gy + row * cell_h
-        draw.line((gx, y, gx + columns * cell_w, y), fill=(220, 220, 220), width=1)
-
-    display_row_for_slot: Dict[int, int] = {}
+    # Horizontal guides and two-character row labels.
+    c.setFont("Helvetica-Bold", 5.1)
     for display_row, slot in enumerate(row_slots):
-        display_row_for_slot[slot.index] = display_row
-        draw.text((4, gy + display_row * cell_h), slot.abbrev, fill="black", font=label_font)
+        yy = gy + (rows - display_row - 1) * cell_h
+        c.setFillColor(black)
+        c.drawRightString(gx - 3, yy + cell_h * 0.32, slot.abbrev[:2].upper())
+    c.setStrokeColorRGB(0.84, 0.84, 0.84)
+    c.setLineWidth(0.25)
+    for row in range(rows + 1):
+        yy = gy + row * cell_h
+        c.line(gx, yy, gx + gw, yy)
 
+    display_row_for_slot = {
+        slot.index: rows - display_row - 1 for display_row, slot in enumerate(row_slots)
+    }
     for (slot_index, col), accent_level in sorted(cells.items()):
         row = display_row_for_slot[slot_index]
-        x0 = gx + col * cell_w + 1
-        y0 = gy + row * cell_h + 1
-        x1 = x0 + cell_w - 2
-        y1 = y0 + cell_h - 2
-        fill_color = accent_scheme.colors[accent_level]
-        draw.rectangle((x0, y0, x1, y1), fill=fill_color)
+        x0 = gx + col * cell_w + 0.45
+        y0 = gy + row * cell_h + 0.45
+        w = max(0.6, cell_w - 0.9)
+        h = max(0.6, cell_h - 0.9)
+        _set_rgb(c, accent_scheme.colors[accent_level])
+        c.setStrokeColor(white)
+        c.setLineWidth(0)
+        c.rect(x0, y0, w, h, stroke=0, fill=1)
 
         if (slot_index, col) in flam_cells:
-            # ORN flam marker: a small white square inside the main note, top-left.
-            marker_size = max(2, min(cell_w, cell_h) // 3)
-            inset = 1
-            mx0 = x0 + inset
-            my0 = y0 + inset
-            draw.rectangle(
-                (mx0, my0, mx0 + marker_size - 1, my0 + marker_size - 1),
-                fill="white",
-            )
+            marker = max(1.4, min(3.0, cell_w * 0.30, cell_h * 0.35))
+            c.setFillColor(white)
+            c.setStrokeColorRGB(0.25, 0.25, 0.25)
+            c.setLineWidth(0.25)
+            c.rect(x0 + 0.8, y0 + h - marker - 0.8, marker, marker, stroke=1, fill=1)
 
-    image.save(output_path)
+
+def draw_accent_legend_pdf(
+    c: "pdfcanvas.Canvas",
+    accent_scheme: AccentScheme,
+    page_width: float,
+    y: float,
+) -> None:
+    levels = [level for level in accent_scheme.levels if level.index > 0]
+    if not levels:
+        return
+    c.setFont("Helvetica", 4.7)
+    item_width = 102.0
+    total_width = item_width * len(levels)
+    start_x = (page_width - total_width) / 2
+    for i, level in enumerate(levels):
+        x = start_x + i * item_width
+        _set_rgb(c, level.color)
+        c.rect(x, y, 6, 6, stroke=0, fill=1)
+        c.setFillColor(black)
+        label = level.name.replace("_", " ").title()
+        c.drawString(x + 8, y + 0.8, f"{label} {level.min_velocity}-{level.max_velocity}")
 
 
 def create_pdf_catalog(
@@ -911,97 +893,73 @@ def create_pdf_catalog(
     no_ghostscript: bool,
     overwrite: bool,
 ) -> int:
-    if not PIL_AVAILABLE:
-        fail("Pillow is required for --pdf (pip install Pillow)")
+    """Create an A4 vector PDF directly with ReportLab.
+
+    The compatibility options keep_png and no_ghostscript are accepted so old
+    command lines continue to work. No PNG files or Ghostscript process are used.
+    """
+    if not REPORTLAB_AVAILABLE:
+        fail("ReportLab is required for --pdf (pip install reportlab)")
     if final_pdf.exists() and not overwrite:
         fail(f"PDF already exists: {final_pdf} (use --overwrite)")
+    if keep_png:
+        print("[WARN] --keep-png is ignored: the new PDF renderer draws vector graphics directly.")
 
     final_pdf.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="adc_midi_split_") as tmp_name:
-        tmp_dir = Path(tmp_name)
-        png_paths: List[Path] = []
-        for spec in specs:
-            png_path = tmp_dir / f"{spec.name}_grid.png"
-            render_pattern_png(spec, slot_maps[spec.slot_map], bars, events, png_path, input_midi_tpq, accent_scheme)
-            png_paths.append(png_path)
+    page_w, page_h = A4
+    cols, rows = 2, 5
+    per_page = cols * rows
+    margin_x = 31.5
+    header_y = page_h - 42
+    legend_y = page_h - 59
+    grid_top = page_h - 83
+    footer_y = 21
+    gap_x = 13.5
+    gap_y = 6.5
+    card_w = (page_w - 2 * margin_x - gap_x) / cols
+    card_h = (grid_top - footer_y - 14 - gap_y * (rows - 1)) / rows
+    page_count = max(1, math.ceil(len(specs) / per_page))
 
-        # Same proven layout as the reference script: A4 ~300 DPI, 2 x 5.
-        a4_w, a4_h = 2480, 3508
-        dpi = 300
-        cols, rows = 2, 5
-        per_page = cols * rows
-        margin_side = 120
-        title_y = 110
-        title_font_size = 60
-        title_gap = 28
-        margin_top = title_y + title_font_size + title_gap
-        margin_bottom = 100
-        inner_margin = 24
-        image_scale = 0.92
-        page_font = choose_font(title_font_size, bold=True)
-        footer_font = choose_font(22, bold=False)
-        title_text = f"Original MIDI: {input_midi.name}"
+    c = pdfcanvas.Canvas(str(final_pdf), pagesize=A4, pageCompression=1)
+    c.setTitle(f"{input_midi.stem} patterns")
+    title_text = f"Original MIDI: {input_midi.name}"
 
-        usable_w = a4_w - 2 * margin_side - (cols - 1) * inner_margin
-        usable_h = a4_h - margin_top - margin_bottom - (rows - 1) * inner_margin
-        slot_w = usable_w // cols
-        slot_h = usable_h // rows
-        page_count = max(1, math.ceil(len(png_paths) / per_page))
-        pages: List[Image.Image] = []
+    for page_index in range(page_count):
+        _draw_centered_text(c, page_w / 2, header_y, title_text, "Helvetica-Bold", 14)
+        draw_accent_legend_pdf(c, accent_scheme, page_w, legend_y)
 
-        for page_index in range(page_count):
-            page = Image.new("RGB", (a4_w, a4_h), "white")
-            draw = ImageDraw.Draw(page)
-            bbox = draw.textbbox((0, 0), title_text, font=page_font)
-            title_w = bbox[2] - bbox[0]
-            draw.text(((a4_w - title_w) // 2, title_y), title_text, fill="black", font=page_font)
+        chunk = specs[page_index * per_page:(page_index + 1) * per_page]
+        for local_index, spec in enumerate(chunk):
+            row = local_index // cols
+            col = local_index % cols
+            x = margin_x + col * (card_w + gap_x)
+            y_top = grid_top - row * (card_h + gap_y)
+            y = y_top - card_h
+            draw_pattern_card_pdf(
+                c,
+                spec,
+                slot_maps[spec.slot_map],
+                bars,
+                events,
+                input_midi_tpq,
+                accent_scheme,
+                x,
+                y,
+                card_w,
+                card_h,
+            )
 
-            chunk = png_paths[page_index * per_page : (page_index + 1) * per_page]
-            for local_index, png_path in enumerate(chunk):
-                row = local_index // cols
-                col = local_index % cols
-                image = Image.open(png_path).convert("RGB")
-                base_scale = min(slot_w / image.width, slot_h / image.height)
-                scale = base_scale * image_scale
-                new_size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
-                image = image.resize(new_size, Image.LANCZOS)
-                x0 = margin_side + col * (slot_w + inner_margin)
-                y0 = margin_top + row * (slot_h + inner_margin)
-                x = x0 + (slot_w - image.width) // 2
-                y = y0 + (slot_h - image.height) // 2
-                page.paste(image, (x, y))
+        _draw_centered_text(
+            c,
+            page_w / 2,
+            footer_y,
+            f"Page {page_index + 1} of {page_count}",
+            "Helvetica",
+            6.5,
+        )
+        c.showPage()
 
-            footer = f"Page {page_index + 1} of {page_count}"
-            footer_box = draw.textbbox((0, 0), footer, font=footer_font)
-            draw.text(((a4_w - (footer_box[2] - footer_box[0])) // 2, a4_h - 65), footer, fill=(80, 80, 80), font=footer_font)
-            pages.append(page)
-
-        raw_pdf = tmp_dir / "catalog_raw.pdf"
-        first, *rest = pages
-        first.save(raw_pdf, save_all=True, append_images=rest, resolution=dpi)
-
-        gs_exe = None if no_ghostscript else find_ghostscript_executable()
-        if gs_exe:
-            gs_pdf = tmp_dir / "catalog_a4.pdf"
-            if convert_pdf_to_a4_with_ghostscript(gs_exe, raw_pdf, gs_pdf):
-                shutil.copy2(gs_pdf, final_pdf)
-            else:
-                print("[WARN] Ghostscript conversion failed; keeping Pillow-generated PDF.")
-                shutil.copy2(raw_pdf, final_pdf)
-        else:
-            if not no_ghostscript:
-                print("[WARN] Ghostscript not found in PATH; keeping Pillow-generated PDF.")
-            shutil.copy2(raw_pdf, final_pdf)
-
-        if keep_png:
-            png_dir = final_pdf.with_name(final_pdf.stem + "_png")
-            if png_dir.exists() and not overwrite:
-                fail(f"PNG directory already exists: {png_dir} (use --overwrite)")
-            png_dir.mkdir(parents=True, exist_ok=True)
-            for png_path in png_paths:
-                shutil.copy2(png_path, png_dir / png_path.name)
-            print(f"[PDF] Kept pattern PNGs: {png_dir}")
-
+    c.save()
     return page_count
 
 
@@ -1018,7 +976,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("input_midi", type=Path, help="Original MIDI file (SMF Type 0 or 1)")
     parser.add_argument("pattern_csv", type=Path, help="CSV downloaded from ADC PatternLab")
     parser.add_argument("--split", action="store_true", help="Save one NAME.MID file per EXPORT=YES row")
-    parser.add_argument("--pdf", action="store_true", help="Create a multi-page A4 pattern-grid PDF")
+    parser.add_argument("--pdf", action="store_true", help="Create a multi-page A4 vector PDF (ReportLab)")
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -1049,8 +1007,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help=f"Accent scheme used for PDF colors (default: {DEFAULT_ACCENT_SCHEME})",
     )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs")
-    parser.add_argument("--keep-png", action="store_true", help="Keep per-pattern grid PNG files beside the PDF")
-    parser.add_argument("--no-ghostscript", action="store_true", help="Do not run Ghostscript even if found")
+    parser.add_argument("--keep-png", action="store_true", help="Deprecated compatibility option; ignored by vector PDF renderer")
+    parser.add_argument("--no-ghostscript", action="store_true", help="Deprecated compatibility option; Ghostscript is never used")
     parser.add_argument("--dry-run", action="store_true", help="Validate and print the plan without writing files")
     parser.add_argument("--version", action="version", version=VERSION_TEXT)
     args = parser.parse_args(argv)
