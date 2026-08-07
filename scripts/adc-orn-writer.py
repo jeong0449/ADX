@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adc-orn-writer.py 260801a
+"""adc-orn-writer.py 260807c
 
 Create ORN v1.0 sidecar files from a reviewed ADC PatternLab CSV and the
-original, unsplit MIDI file.
+original, unsplit MIDI file. Supports both FLAM grace events and ordinary
+off-grid NOTE events that cannot be represented by the selected ADT grid.
 
 The CSV is the catalog authority. Only rows with EXPORT=YES and ORN=YES are
 processed. START_BAR..END_BAR selects the pattern range in the original MIDI.
@@ -29,15 +30,15 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import mido
 from mido import Message, MetaMessage, MidiFile
 
-from adc_rhythm_analysis import detect_flams
+from adc_rhythm_analysis import ADT_DRUM_FAMILIES, detect_flams
 
 SCRIPT_NAME = "adc-orn-writer.py"
-VERSION = "260801a"
+VERSION = "260807c"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 ORN_VERSION_LINE = "; ORN v1.0"
 CANONICAL_PPQN = 240
-VALID_SUBDIV = {"16", "8T", "16T"}
-STEPS_PER_QUARTER = {"16": 4, "8T": 3, "16T": 6}
+VALID_SUBDIV = {"16", "32", "8T", "16T"}
+STEPS_PER_QUARTER = {"16": 4, "32": 8, "8T": 3, "16T": 6}
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class DrumEvent:
 
 @dataclass(frozen=True)
 class OrnEvent:
+    kind: str
     target_step: int
     slot: str
     offset_ticks: int
@@ -143,7 +145,7 @@ def load_catalog(path: Path) -> List[CatalogRow]:
 
             subdiv = row["SUBDIV"].upper()
             if subdiv not in VALID_SUBDIV:
-                fail(f"CSV row {row_number}: SUBDIV must be one of 16, 8T, 16T")
+                fail(f"CSV row {row_number}: SUBDIV must be one of 16, 32, 8T, 16T")
             parse_time_signature(row["TIME_SIG"], row_number=row_number)
 
             rows.append(CatalogRow(
@@ -251,6 +253,16 @@ def build_orn_events(
     messages: Sequence[Tuple[int, int, Message | MetaMessage]],
     source_ppqn: int,
 ) -> Tuple[int, int, List[OrnEvent]]:
+    """Build ORN events from reviewed pattern data.
+
+    Two event classes are emitted:
+      * FLAM: removable grace notes identified by detect_flams()
+      * NOTE: ordinary note-ons that do not lie exactly on the selected ADT grid
+
+    ADX never quantizes the time axis.  ADT/ADP contains only exact on-grid
+    note-ons; ORN restores the off-grid performance events at their original
+    timing by storing a signed tick offset from a reference grid step.
+    """
     start_tick = bars[row.start_bar - 1].start_tick
     end_tick = bars[row.end_bar - 1].end_tick
     source_loop_ticks = end_tick - start_tick
@@ -259,11 +271,19 @@ def build_orn_events(
         fail(f"CSV row {row.row_number}: no CH10 note_on events in bars {row.start_bar}-{row.end_bar}")
 
     analysis = detect_flams(events, source_ppqn, loop_ticks=source_loop_ticks, loop_start=0)
+    removable_grace_keys = {
+        (int(item["grace_tick"]), int(item["grace_note"]))
+        for item in analysis["flams"]
+        if item.get("remove_from_subdivision")
+    }
+
     length = pattern_length_steps(row, bars)
-    step_ticks = CANONICAL_PPQN // STEPS_PER_QUARTER[row.subdiv]
-    loop_ticks = length * step_ticks
+    steps_per_quarter = STEPS_PER_QUARTER[row.subdiv]
+    step_ticks = CANONICAL_PPQN / steps_per_quarter
+    loop_ticks = int(round(length * step_ticks))
     orn_events: List[OrnEvent] = []
 
+    # 1) Preserve confirmed flam/grace notes using the existing FLAM event type.
     for item in analysis["flams"]:
         if not item.get("remove_from_subdivision"):
             continue
@@ -279,10 +299,11 @@ def build_orn_events(
             if target_step >= length:
                 target_step = 0
                 loop_wrap = True
-            target_grid_tick = target_step * step_ticks
+            target_grid_tick = int(round(target_step * step_ticks))
             offset_ticks = grace_tick - target_grid_tick
 
         orn_events.append(OrnEvent(
+            kind="FLAM",
             target_step=target_step,
             slot=str(item["family"]),
             offset_ticks=offset_ticks,
@@ -291,9 +312,47 @@ def build_orn_events(
             confidence=str(item["confidence"]),
         ))
 
-    orn_events.sort(key=lambda event: (event.target_step, event.slot, event.offset_ticks, event.velocity))
-    return length, loop_ticks, orn_events
+    # 2) Preserve ordinary off-grid notes that ADT/ADP cannot encode.
+    #    Grid membership is an exact test: no note-on is ever snapped in time.
+    #    The nearest regular step is used only as an ORN reference point.
+    for event in events:
+        source_tick = int(event["tick"])
+        note = int(event["note"])
+        if (source_tick, note) in removable_grace_keys:
+            # Already represented above as FLAM; avoid a duplicate NOTE event.
+            continue
 
+        tick = canonical_tick(source_tick, source_ppqn)
+        step_pos = tick / step_ticks
+        nearest_step = int(round(step_pos))
+
+        # Exact on-grid hits belong in ADT/ADP, not ORN.
+        if math.isclose(step_pos, nearest_step, abs_tol=1e-9):
+            continue
+
+        loop_wrap = False
+        if nearest_step >= length:
+            target_step = 0
+            target_grid_tick = loop_ticks
+            loop_wrap = True
+        else:
+            target_step = nearest_step
+            target_grid_tick = int(round(target_step * step_ticks))
+
+        offset_ticks = tick - target_grid_tick
+        slot = ADT_DRUM_FAMILIES.get(note, f"N{note}")
+        orn_events.append(OrnEvent(
+            kind="NOTE",
+            target_step=target_step,
+            slot=slot,
+            offset_ticks=offset_ticks,
+            velocity=int(event["velocity"]),
+            loop_wrap=loop_wrap,
+            confidence="EXACT",
+        ))
+
+    orn_events.sort(key=lambda event: (event.target_step, event.slot, event.offset_ticks, event.velocity, event.kind))
+    return length, loop_ticks, orn_events
 
 def render_orn(row: CatalogRow, length: int, loop_ticks: int, events: Sequence[OrnEvent]) -> str:
     lines = [
@@ -309,7 +368,7 @@ def render_orn(row: CatalogRow, length: int, loop_ticks: int, events: Sequence[O
     ]
     for event in events:
         line = (
-            f"FLAM TARGET_STEP={event.target_step} SLOT={event.slot} "
+            f"{event.kind} TARGET_STEP={event.target_step} SLOT={event.slot} "
             f"OFFSET_TICKS={event.offset_ticks} VELOCITY={event.velocity}"
         )
         if event.loop_wrap:
@@ -391,7 +450,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 raise ValueError(f"duplicate output NAME {row.name}")
             planned_paths.add(output_path)
             if not orn_events:
-                raise ValueError("ORN=YES but no removable HIGH/MEDIUM flam candidate was found")
+                raise ValueError("ORN=YES but no FLAM or off-grid NOTE event was found")
             if output_path.exists() and not args.overwrite:
                 raise ValueError(f"exists: {output_path} (use --overwrite)")
 
