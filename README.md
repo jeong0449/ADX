@@ -3,7 +3,7 @@
 
 **Analyze • Abstract • Exchange • Play**
 
-ADX Drum is an open software ecosystem for analyzing, abstracting, exchanging, and playing reusable drum patterns derived from Standard MIDI drum performances.
+ADX Drum is an **open cross-platform software ecosystem** for analyzing, abstracting, exchanging, and playing reusable drum patterns derived from Standard MIDI drum performances.
 
 ---
 
@@ -16,7 +16,7 @@ ADX Drum is an open software ecosystem for analyzing, abstracting, exchanging, a
 
 The name **ADX** originally referred to the ADT/ADP format family. As the project evolved beyond file formats into a complete software ecosystem—including MIDI analysis, pattern abstraction, format conversion, playback, and a pattern library—**ADX** naturally became the umbrella name for the platform.
 
-The letter **X** is intentionally open-ended. It evokes concepts such as **eXchange**, **eXtended**, and future **expansion**, reflecting the evolution of the platform beyond individual file formats.
+The letter **X** is intentionally open-ended. It evokes ideas such as **eXchange**, **eXtensibility**, **Cross-platform compatibility**, and future **eXpansion**, reflecting the evolution of ADX from a family of file formats into an open software ecosystem.
 
 Today, **ADX Drum** provides an integrated workflow for **analyzing, abstracting, exchanging, and playing** drum patterns.
 
