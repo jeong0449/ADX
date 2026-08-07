@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adc-patternlab.py 260806d
+"""adc-patternlab.py 260807a
 
 One MIDI -> self-contained interactive HTML/SVG whole-file drum matrix.
 Click the SVG to toggle RAW GM notes and two-bar SLOT_MAP display.
@@ -17,7 +17,7 @@ from adc_rhythm_analysis import (
     SUPPORTED_RESOLUTIONS, analyze_event_rhythm, detect_flams,
 )
 
-SCRIPT_NAME="adc-patternlab.py"; VERSION="260806d"; VERSION_TEXT=f"{SCRIPT_NAME} {VERSION}"
+SCRIPT_NAME="adc-patternlab.py"; VERSION="260807a"; VERSION_TEXT=f"{SCRIPT_NAME} {VERSION}"
 GHOST_CANDIDATE_MAX_VELOCITY=30
 if tuple(SUPPORTED_RESOLUTIONS) != ("16", "32", "8T", "16T"):
     raise RuntimeError(
@@ -508,11 +508,22 @@ def card(b,x,y,w=430,h=470,path=None):
         p += [tx(x+8,yy+sh*.7,f'{si:02d} {s.label} [{",".join(map(str,s.notes))}]',"row"),f'<line x1="{gx}" y1="{yy+sh:.2f}" x2="{gx+gw}" y2="{yy+sh:.2f}" class="rguide"/>']
     for subdiv,cells_per_beat in subdivision_cells.items():
         cols=max(1,round(beats*cells_per_beat)); active=" active" if subdiv==initial_subdiv else ""; cells={}
+        step_ticks=b.subdiv.get("tpq",1)/cells_per_beat
         for e in b.events:
             if id(e) in excluded_grace_ids:continue
             si=slot_index(b.smap,e.note)
             if si is None:continue
-            c=max(0,min(cols-1,math.floor((e.tick-b.start)/duration*cols+0.5))); key=(si,c); prev=cells.get(key)
+            rel_tick=e.tick-b.start
+            step_pos=rel_tick/step_ticks
+            nearest=round(step_pos)
+            # Grid view is a filter, not a time quantizer:
+            # only exact on-grid note-ons are admitted to a cell.
+            if not math.isclose(step_pos,nearest,abs_tol=1e-9):
+                continue
+            c=int(nearest)
+            if not 0<=c<cols:
+                continue
+            key=(si,c); prev=cells.get(key)
             if prev is None or e.vel>prev.vel:cells[key]=e
         cell_w=gw/cols
         p.append(f'<g class="subdiv-layer slot-cells subdiv-{subdiv}{active}" data-subdiv="{subdiv}">')
@@ -522,7 +533,7 @@ def card(b,x,y,w=430,h=470,path=None):
             p.append(f'<rect x="{xx+.6:.2f}" y="{yy+.6:.2f}" width="{max(.5,cell_w-1.2):.2f}" height="{max(.5,sh-1.2):.2f}" rx="1.2" class="slotcell velocity{vlevel} hitstrength{hlevel}"><title>slot {si} {b.smap.slots[si].label}; raw {e.note}; velocity {e.vel} (band {vlevel}); ADX 6-accent {hsymbol} = {hlabel}; duration {e.dur}; resolution {subdiv}</title></rect>')
         p.append('</g>')
     p.append('</g>')
-    foot='click SVG: RAW ↔ QUANTIZED' if not b.unknown else 'WARNING · nearest SLOT_MAP used · missing notes: '+','.join(map(str,b.unknown))
+    foot='click SVG: RAW ↔ GRID' if not b.unknown else 'WARNING · nearest SLOT_MAP used · missing notes: '+','.join(map(str,b.unknown))
     p += [tx(x+10,y+251,foot,"meta"),card_controls(path,b,x,y+264,w),'</g>']; return ''.join(p)
 
 def select_options(items, selected):
@@ -656,7 +667,7 @@ def render(path,mid,bars_,bb,skipped_leading_bars=0):
 <div class="header-top"><div class="brand"><h1>{html.escape(path.name)}</h1><div class="brand-sub">ADC PatternLab · {VERSION}</div></div><div class="header-state"><span id="current-pattern">Viewing: —</span><strong id="mode" class="mode-badge">RAW GM NOTES</strong></div></div>
 <div class="summary" title="{header_summary}">{header_summary}</div>
 <div class="header-actions"><div class="tabs"><button class="tab-button active" data-tab="analysis" type="button">Pattern Analysis</button><button class="tab-button" data-tab="midi" type="button">MIDI Files</button></div><div class="action-buttons"><button id="toggle">RAW / QUANTIZED</button><button id="slot-display" type="button" class="quantized-only">Velocity / Accent</button><button id="download-csv" type="button">Download CSV</button><span id="number-status"></span></div><div class="service-area"><span id="service-dot" class="service-dot"></span><span id="service-text" class="service-text">Checking playback service…</span><details class="legend-panel"><summary>Legend ▾</summary><div class="legend-content"><div>Velocity: <i class="lg v0"></i>0 (1–31) <i class="lg v1"></i>1 (32–63) <i class="lg v2"></i>2 (64–95) <i class="lg v3"></i>3 (96–127)</div><div>ADX 6-accent: {accent_legend}</div><div>RAW grid: <i class="lg" style="background:#2563eb"></i>aligned <i class="lg" style="background:#0891b2"></i>near <i class="lg" style="background:#f59e0b"></i>moderate <i class="lg" style="background:#dc2626"></i>far</div><div>RAW: <i class="lg" style="background:#7c3aed;border-color:#4c1d95"></i>ORN candidate · red label = outside SLOT_MAP</div></div></details></div></div>
-</header><section id="tab-analysis" class="tab-panel active"><main><svg id="matrix" xmlns="http://www.w3.org/2000/svg" width="{sw}" height="{sh}" viewBox="0 0 {sw} {sh}">{''.join(body)}</svg></main><details><summary>Analysis notes</summary><p>Each block is checked only against earlier blocks in the same MIDI file. Pattern identity uses only relative onset tick and raw MIDI note. Velocity and note duration are ignored. A repeated block keeps its original Pattern number and omits the matrix drawing.</p><p>A final odd bar containing only one onset group at its beginning is labeled ENDING HIT and excluded from the pattern catalog.</p><p>Each card initially uses the automatically detected resolution. Its own Resolution selector can immediately switch the reference grid and SLOT quantization among 16, 32, 8T, and 16T without affecting other cards. Reloading the HTML restores the original automatic selections. Grid fit is a separate visual diagnostic: for each candidate grid it reports the percentage of RAW note-on events that fall within 5% of one grid step from the nearest line. Best marks the highest such percentage, with mean normalized error used only to break ties. It does not overwrite the shared rhythm-analysis decision.</p><p>If no SLOT_MAP covers every note, the nearest map is used, the card receives a red border, and uncovered MIDI notes are listed as MISSING NOTES. Ties fall back conservatively toward lower IDs, beginning with LEGACY 12.</p><p>RAW view places every note-on circle at its original MIDI tick position and extends a horizontal line to the recorded note-off position. Very short durations receive a two-pixel minimum display line; the note-on position itself is never moved. The vertical subdivision lines are reference overlays only; changing a card’s Resolution selector never moves RAW notes. Velocity controls circle size. RAW note colors indicate distance from the nearest line of the currently selected resolution and are recalculated independently for each card whenever its Resolution selector changes. Notes that currently trigger automatic ORN candidacy are shown in purple, overriding deviation color: velocity ≤ 30 ghost candidates and the grace note of each detected flam pair. Hovering a purple note shows the exact reason, including velocity threshold or flam confidence, tick gap, threshold, and whether the grace is removed from subdivision. Flam main hits remain blue because they stay in the ADX grid.</p><p>The report has two tabs: Pattern Analysis and Local MIDI Files. The MIDI Files tab obtains a restricted list of immediate, non-symlink MID files from the local playback service. The browser receives opaque IDs rather than filesystem paths and plays selected files through the configured FluidSynth/SF2 backend. In SLOT view, each retained hit fills its complete quantized cell. The Play button sends the MIDI generated from the current Compare Mode directly to the local PatternLab playback service, which uses the configured FluidSynth executable and SF2 SoundFont. The QUANTIZED display button switches between the original four-band MIDI Velocity view and the ADX 6-accent preview. Each non-duplicate card can play or download exactly the sequence selected in Compare Mode: RAW only, RAW → 6, RAW → 4, or RAW → 6 → 4. Every included section is repeated twice, and adjacent sections are separated by one quarter-note beat. ADX Accent uses the five playable levels of the JSON-defined 6-accent scheme. The displayed symbol, label, velocity range, and representative velocity come from accent_levels.json; an empty cell represents Rest. Flam grace notes marked for removal from subdivision are intentionally omitted there and belong to ORN; the main hit remains in the grid. Ghost candidates that are not classified as removable flam grace notes remain visible. When multiple retained raw hits collapse into one slot/cell, the strongest velocity is shown.</p><p>SLOT_MAP usage: <code>{html.escape(json.dumps(summary,ensure_ascii=False))}</code></p><p>The shared adc_rhythm_analysis module owns the complete subdivision decision: flam detection, grace-note exclusion, onset phase, note-duration evidence, and conservative filename hints. The same flam-filtered events are used for both phase and duration scoring. Beat anchors and the shared half-beat remain excluded from phase evidence.</p></details></section><section id="tab-midi" class="tab-panel"><div class="midi-browser"><div class="midi-toolbar"><div><h2>Local MIDI Files</h2><div class="midi-meta">Allowed local MIDI directory · paths are not exposed to the browser</div></div><button id="refresh-midi" type="button">Refresh</button></div><div id="midi-list" class="midi-list"><div class="empty-message">Open this tab to load the MIDI file list.</div></div><div class="library-player"><div class="library-now"><strong id="library-file">Nothing playing</strong><span id="library-time">0:00 / 0:00</span></div><div class="library-progress"><span id="library-progress-fill"></span></div><div class="library-controls"><button id="library-stop" type="button">■ Stop</button></div></div></div></section><script>(()=>{{
+</header><section id="tab-analysis" class="tab-panel active"><main><svg id="matrix" xmlns="http://www.w3.org/2000/svg" width="{sw}" height="{sh}" viewBox="0 0 {sw} {sh}">{''.join(body)}</svg></main><details><summary>Analysis notes</summary><p>Each block is checked only against earlier blocks in the same MIDI file. Pattern identity uses only relative onset tick and raw MIDI note. Velocity and note duration are ignored. A repeated block keeps its original Pattern number and omits the matrix drawing.</p><p>A final odd bar containing only one onset group at its beginning is labeled ENDING HIT and excluded from the pattern catalog.</p><p>Each card initially uses the automatically detected resolution. Its own Resolution selector can immediately switch the reference grid and SLOT quantization among 16, 32, 8T, and 16T without affecting other cards. Reloading the HTML restores the original automatic selections. Grid fit is a separate visual diagnostic: for each candidate grid it reports the percentage of RAW note-on events that fall within 5% of one grid step from the nearest line. Best marks the highest such percentage, with mean normalized error used only to break ties. It does not overwrite the shared rhythm-analysis decision.</p><p>If no SLOT_MAP covers every note, the nearest map is used, the card receives a red border, and uncovered MIDI notes are listed as MISSING NOTES. Ties fall back conservatively toward lower IDs, beginning with LEGACY 12.</p><p>RAW view places every note-on circle at its original MIDI tick position and extends a horizontal line to the recorded note-off position. Very short durations receive a two-pixel minimum display line; the note-on position itself is never moved. The vertical subdivision lines are reference overlays only; changing a card’s Resolution selector never moves RAW notes. Velocity controls circle size. RAW note colors indicate distance from the nearest line of the currently selected resolution and are recalculated independently for each card whenever its Resolution selector changes. Notes that currently trigger automatic ORN candidacy are shown in purple, overriding deviation color: velocity ≤ 30 ghost candidates and the grace note of each detected flam pair. Hovering a purple note shows the exact reason, including velocity threshold or flam confidence, tick gap, threshold, and whether the grace is removed from subdivision. Flam main hits remain blue because they stay in the ADX grid.</p><p>The report has two tabs: Pattern Analysis and Local MIDI Files. The MIDI Files tab obtains a restricted list of immediate, non-symlink MID files from the local playback service. The browser receives opaque IDs rather than filesystem paths and plays selected files through the configured FluidSynth/SF2 backend. In SLOT view, each retained hit fills its complete on-grid cell. The Play button sends the MIDI generated from the current Compare Mode directly to the local PatternLab playback service, which uses the configured FluidSynth executable and SF2 SoundFont. The GRID display button switches between the original four-band MIDI Velocity view and the ADX 6-accent preview. Each non-duplicate card can play or download exactly the sequence selected in Compare Mode: RAW only, RAW → 6, RAW → 4, or RAW → 6 → 4. Every included section is repeated twice, and adjacent sections are separated by one quarter-note beat. ADX Accent uses the five playable levels of the JSON-defined 6-accent scheme. The displayed symbol, label, velocity range, and representative velocity come from accent_levels.json; an empty cell represents Rest. Flam grace notes marked for removal from subdivision are intentionally omitted there and belong to ORN; the main hit remains in the grid. Ghost candidates that are not classified as removable flam grace notes remain visible. Only note-ons that already lie exactly on the selected grid are shown in SLOT view; off-grid note-ons are never snapped into a cell. When multiple retained on-grid hits occupy one slot/cell, the strongest velocity is shown.</p><p>SLOT_MAP usage: <code>{html.escape(json.dumps(summary,ensure_ascii=False))}</code></p><p>The shared adc_rhythm_analysis module owns the complete subdivision decision: flam detection, grace-note exclusion, onset phase, note-duration evidence, and conservative filename hints. The same flam-filtered events are used for both phase and duration scoring. Beat anchors and the shared half-beat remain excluded from phase evidence.</p></details></section><section id="tab-midi" class="tab-panel"><div class="midi-browser"><div class="midi-toolbar"><div><h2>Local MIDI Files</h2><div class="midi-meta">Allowed local MIDI directory · paths are not exposed to the browser</div></div><button id="refresh-midi" type="button">Refresh</button></div><div id="midi-list" class="midi-list"><div class="empty-message">Open this tab to load the MIDI file list.</div></div><div class="library-player"><div class="library-now"><strong id="library-file">Nothing playing</strong><span id="library-time">0:00 / 0:00</span></div><div class="library-progress"><span id="library-progress-fill"></span></div><div class="library-controls"><button id="library-stop" type="button">■ Stop</button></div></div></div></section><script>(()=>{{
 const s=document.getElementById('matrix'),m=document.getElementById('mode'),slotDisplay=document.getElementById('slot-display');slotDisplay.style.display='none';
 const BLOCK_DATA={block_data_json};
 const ACCENT_SCHEMES={accent_levels_json};
@@ -674,8 +685,8 @@ function stopLibraryVisual(clearRows=true){{if(libraryAnimation){{cancelAnimatio
 async function playLibraryFile(fileId,name,knownDuration){{await stopPreview();try{{const r=await fetch('/play-file',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{id:fileId}})}});const data=await r.json();if(!r.ok)throw new Error(data.error||`HTTP ${{r.status}}`);libraryCurrentId=fileId;libraryDuration=Number(data.duration_seconds??knownDuration)||0;libraryStartedAt=performance.now();document.getElementById('library-file').textContent=String(data.name||name);document.querySelectorAll('.midi-row').forEach(row=>row.classList.toggle('playing',row.dataset.fileId===fileId));stopLibraryVisual(false);libraryStartedAt=performance.now();if(libraryDuration>0)updateLibraryProgress();else document.getElementById('library-time').textContent='Playing';}}catch(error){{alert('MIDI playback failed.\\n\\n'+error.message);}}}}
 async function stopLibraryPlayback(){{try{{await fetch('/stop',{{method:'POST'}});}}catch(_e){{}}stopLibraryVisual();document.getElementById('library-file').textContent='Nothing playing';document.getElementById('library-time').textContent='0:00 / 0:00';}}
 document.getElementById('refresh-midi').addEventListener('click',()=>{{midiFilesLoaded=false;loadMidiFiles();}});document.getElementById('library-stop').addEventListener('click',stopLibraryPlayback);checkService();
-function t(){{const v=s.classList.toggle('slotmode');m.textContent=v?(s.classList.contains('accentmode')?'QUANTIZED SLOT MAP · ACCENT':'QUANTIZED SLOT MAP · VELOCITY'):'RAW GM NOTES';slotDisplay.style.display=v?'inline-block':'none'}}
-function toggleSlotDisplay(){{const accent=s.classList.toggle('accentmode');slotDisplay.textContent=accent?'QUANTIZED: Accent':'QUANTIZED: Velocity';if(s.classList.contains('slotmode'))m.textContent=accent?'QUANTIZED SLOT MAP · ACCENT':'QUANTIZED SLOT MAP · VELOCITY';}}
+function t(){{const v=s.classList.toggle('slotmode');m.textContent=v?(s.classList.contains('accentmode')?'GRID SLOT MAP · ACCENT':'GRID SLOT MAP · VELOCITY'):'RAW GM NOTES';slotDisplay.style.display=v?'inline-block':'none'}}
+function toggleSlotDisplay(){{const accent=s.classList.toggle('accentmode');slotDisplay.textContent=accent?'GRID: Accent':'GRID: Velocity';if(s.classList.contains('slotmode'))m.textContent=accent?'GRID SLOT MAP · ACCENT':'GRID SLOT MAP · VELOCITY';}}
 s.addEventListener('click',e=>{{if(!e.target.closest('.pattern-controls'))t()}});document.getElementById('toggle').addEventListener('click',t);slotDisplay.addEventListener('click',toggleSlotDisplay);const currentPattern=document.getElementById('current-pattern');
 const visibleCards=new Map();
 const cardObserver=new IntersectionObserver(entries=>{{
@@ -698,7 +709,7 @@ function quantizedVelocity(v,schemeName){{
   return level.representative_velocity;
 }}
 function slotForNote(slots,note){{for(let i=0;i<slots.length;i++)if(slots[i].notes.includes(note))return i;return -1}}
-function quantizedEvents(data,subdiv,levels){{
+function gridEvents(data,subdiv,levels){{
   const cpb={{'16':4,'32':8,'8T':3,'16T':6}}[subdiv]||4;
   const stepTicks=TPQ/cpb;
   const maxCell=Math.max(0,Math.ceil(data.duration/stepTicks)-1);
@@ -706,18 +717,22 @@ function quantizedEvents(data,subdiv,levels){{
   data.events.forEach(ev=>{{
     if(ev.excluded)return;
     const si=slotForNote(data.slots,ev.note);if(si<0)return;
-    const cell=Math.max(0,Math.min(maxCell,Math.round(ev.tick/stepTicks)));
-    const snappedTick=Math.min(data.duration-1,Math.round(cell*stepTicks));
+    const stepPos=ev.tick/stepTicks;
+    const nearest=Math.round(stepPos);
+    // Time axis is never quantized. Off-grid note-ons are omitted from Grid view/export.
+    if(Math.abs(stepPos-nearest)>1e-9)return;
+    const cell=nearest;
+    if(cell<0||cell>maxCell)return;
     const key=si+':'+cell;const prev=cells.get(key);
-    const candidate={{...ev,originalTick:ev.tick,snappedTick}};
+    const candidate={{...ev,cell}};
     if(!prev||ev.vel>prev.vel)cells.set(key,candidate);
   }});
   const out=[];
   cells.forEach((ev,key)=>{{
     const [siText]=key.split(':');const si=Number(siText);
-    const start=ev.snappedTick;
+    const start=ev.tick;
     const duration=Math.max(1,Math.min(Math.max(1,ev.dur||Math.round(TPQ/8)),data.duration-start));
-    out.push({{tick:start,originalTick:ev.originalTick,moveTicks:start-ev.originalTick,note:data.slots[si].representative,vel:quantizedVelocity(ev.vel,levels===4?'4-accent':'6-accent'),dur:duration}});
+    out.push({{tick:start,note:data.slots[si].representative,vel:quantizedVelocity(ev.vel,levels===4?'4-accent':'6-accent'),dur:duration}});
   }});
   return out.sort((a,b)=>a.tick-b.tick||a.note-b.note);
 }}
@@ -739,8 +754,8 @@ function makeComparisonMidi(data,subdiv,compareMode='both'){{
   const raw=data.events.map(ev=>({{tick:ev.tick,note:ev.note,vel:ev.vel,dur:ev.dur}}));
   cursor=addRepeatedSection(events,raw,cursor,data.duration,'RAW x2');
   const sections=[];
-  if(compareMode==='both'||compareMode==='6')sections.push([quantizedEvents(data,subdiv,6),'QUANTIZED 6-ACCENT x2']);
-  if(compareMode==='both'||compareMode==='4')sections.push([quantizedEvents(data,subdiv,4),'QUANTIZED 4-ACCENT x2']);
+  if(compareMode==='both'||compareMode==='6')sections.push([gridEvents(data,subdiv,6),'GRID 6-ACCENT x2']);
+  if(compareMode==='both'||compareMode==='4')sections.push([gridEvents(data,subdiv,4),'GRID 4-ACCENT x2']);
   sections.forEach(([sectionEvents,label])=>{{cursor+=TPQ;cursor=addRepeatedSection(events,sectionEvents,cursor,data.duration,label);}});
   const [num,den]=data.meter||[4,4];const dd=Math.max(0,Math.round(Math.log2(den||4)));
   events.push({{tick:0,type:'tempo',tempo:data.tempo||500000}});

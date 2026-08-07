@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""adc-mid2adt.py 260806c
+"""adc-mid2adt.py 260807a
 
 Convert split drum-pattern MIDI files to ADT v2.3 text files.
 
@@ -20,7 +20,7 @@ ADT v2.3 output
 - [DATA] marker
 - STEP-major data by default (one row per step, one character per slot)
 - SUBDIV values: 16, 32, 8T, 16T
-- Accent symbols are loaded from accent_levels.json (6-accent)
+- Accent symbols are loaded from accent_levels.json (6-accent)\n- Time is never quantized: only exact on-grid note-ons are written to ADT
 
 Required PatternLab CSV
 -----------------------
@@ -49,7 +49,7 @@ from mido import Message, MetaMessage, MidiFile
 from adc_rhythm_analysis import SUPPORTED_RESOLUTIONS, detect_flams
 
 SCRIPT_NAME = "adc-mid2adt.py"
-VERSION = "260806c"
+VERSION = "260807a"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 ADT_VERSION = "ADT v2.3"
 DEFAULT_PPQN = 240
@@ -465,8 +465,15 @@ def build_grid(
         slot = slot_map.slot_for_note(hit.note)
         if slot is None:
             fail(f"SLOT_MAP {slot_map.name} does not accept MIDI note {hit.note}")
-        step = int(round(hit.tick / ticks_per_step))
-        step = max(0, min(length - 1, step))
+        step_pos = hit.tick / ticks_per_step
+        nearest_step = round(step_pos)
+        # ADX time-axis invariant: never snap a note-on to the nearest grid.
+        # ADT contains only note-ons that are already exactly on the selected grid.
+        if not math.isclose(step_pos, nearest_step, abs_tol=1e-9):
+            continue
+        step = int(nearest_step)
+        if not 0 <= step < length:
+            continue
         char = accent_symbol(hit.velocity, accent_levels)
         if strength[char] > strength[grid[step][slot]]:
             grid[step][slot] = char
