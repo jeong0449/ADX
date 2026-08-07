@@ -19,7 +19,7 @@ from typing import Any, Iterable
 from mido import Message, MidiFile
 
 SCRIPT_NAME = "adc_rhythm_analysis.py"
-VERSION = "260806c"
+VERSION = "260807a"
 VERSION_TEXT = f"{SCRIPT_NAME} {VERSION}"
 SUPPORTED_RESOLUTIONS = ("16", "32", "8T", "16T")
 
@@ -333,7 +333,28 @@ def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     winner, top = ranked[0]
     runner = ranked[1][1]
-    if top < 0.28:
+
+    # Perfect-grid rule.  Grid fit is direct timing evidence and therefore
+    # outranks the weaker phase/duration/filename score when exactly one grid
+    # explains every onset.  For nested grids, keep the coarsest grid that
+    # still explains all onsets (16 over 32, 8T over 16T).  If perfect fits
+    # span the straight and triplet families, the pattern remains ambiguous
+    # here and the existing combined-evidence decision is allowed to resolve it.
+    perfect = {
+        kind for kind, stat in grid_fit.items()
+        if float(stat.get("aligned_ratio", 0.0)) >= 0.999999
+    }
+    perfect_winner = None
+    if len(perfect) == 1:
+        perfect_winner = next(iter(perfect))
+    elif perfect and perfect <= {"straight-16", "straight-32"}:
+        perfect_winner = "straight-16" if "straight-16" in perfect else "straight-32"
+    elif perfect and perfect <= {"triplet-8T", "triplet-16T"}:
+        perfect_winner = "triplet-8T" if "triplet-8T" in perfect else "triplet-16T"
+
+    if perfect_winner is not None:
+        final = perfect_winner
+    elif top < 0.28:
         final = "unknown"
     elif top - runner < 0.07:
         # Nested-grid ties are resolved in favor of the coarser valid grid.
@@ -364,6 +385,8 @@ def combine_subdivision_evidence(base: dict, events: Iterable[Any], tpq: int,
     }
     out["strong_32_identity"] = strong_32_identity
     out["strong_16t_identity"] = strong_16t_identity
+    out["perfect_grid_fits"] = sorted(perfect)
+    out["perfect_grid_override"] = perfect_winner
     out["duration_samples"] = duration["samples"]
     out["filename_hints"] = hint["reasons"]
     out["phase_subdivision"] = base.get("subdivision", "unknown")
